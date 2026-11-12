@@ -5,12 +5,13 @@ import * as plugin from '../src/index.ts'
 import { apply, inject } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; stopped: boolean }[])
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   ready = Promise.resolve()
   constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
+  stopped = false
   configured() { return true }
-  async stop() {}
+  async stop() { this.stopped = true }
 } }))
 /** Simulate the Cordis loader updating a volatile configuration reference in place. */
 const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
@@ -83,9 +84,12 @@ describe('permission presets', () => {
     expect(started()).toBe(0)
     const presets = ctx.reflect.provide('permissionPresets', { set: () => {} })
     await vi.waitFor(() => { expect(started()).toBe(1) })
+    const first = runtimes.at(-1)!
     presets()
+    await vi.waitFor(() => { expect(first.stopped).toBe(true) })
     ctx.reflect.provide('permissionPresets', { set: () => {} })
     await vi.waitFor(() => { expect(started()).toBe(2) })
+    expect(runtimes.at(-1)!.stopped).toBe(false)
   })
   it('starts the Runtime without DSH\'s permission presets when workers run in remote sandboxes', async () => {
     const { started } = await host(true)

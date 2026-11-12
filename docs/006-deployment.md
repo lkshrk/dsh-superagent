@@ -255,6 +255,7 @@ Configure the entry in the profile's `cordis.patch.yml`:
 - The process environment stays unchanged: no shims on `PATH`, no `GIT_CONFIG_GLOBAL`. Worker shells run in the sandbox and use its own `gh` and `git`. Blocked commands are not enforced there.
 - A Ticket directory is an empty directory on the control plane that anchors the worker's Session. The prepare command does not run; the sandbox clones the repository, and the worker starts on its default branch, so the team prompt sections should tell workers to create the ticket branch.
 - Sessions start without DeepSeek Harness's permission presets, which dsh-yawn disables; its sandboxes always run with full access.
+- dsh-superagent Sessions refuse every tool outside their own and the work tools, including tools dsh-yawn adds to each Session such as `create_session`. Workers and their subagents may also use the `searxng` and `context7` MCP servers' tools; a subagent dsh-superagent cannot trace to a live ticket gets no tools. The main Session cannot save settings or prompts; use the panel.
 
 `authenticatedPanel: true`:
 

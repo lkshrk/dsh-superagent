@@ -63,9 +63,14 @@ declare module '@deepseek-ai/cordis' {
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
 const MASTER_TOOLS = ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+/** Main Session tools that change what the host runs; with `remoteWorkers` only the signed-in panel changes them. */
+const PANEL_ONLY_TOOLS = ['orchestrator_settings_save', 'orchestrator_prompts_save']
+/** Read-only MCP servers a worker may use with `remoteWorkers`, as tool name prefixes. */
+const WORKER_MCP_PREFIXES = ['mcp__searxng__', 'mcp__context7__']
+const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => name.startsWith(prefix))
 /** Refuses tools outside `allowed`, including ones a host registers on each agent, which `restrict` cannot mask. */
-const onlyTools = (allowed: ReadonlySet<string>) => ({ name }: { name: string }): string | undefined =>
-  allowed.has(name) ? undefined : `${name} is not available to dsh-superagent Sessions`
+const onlyTools = (allowed: ReadonlySet<string>, also: (name: string) => boolean = () => false) => ({ name }: { name: string }): string | undefined =>
+  allowed.has(name) || also(name) ? undefined : `${name} is not available to dsh-superagent Sessions`
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -266,7 +271,7 @@ export class Sessions {
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
-    const own = host.tools(agent, ticket)
+    const own = host.tools(agent, ticket).filter(tool => !(master && host.remoteWorkers && PANEL_ONLY_TOOLS.includes(tool.name)))
     for (const tool of own) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
       binding.disposers.push(agent.ctx.tools.restrict({ allow: MASTER_TOOLS }),
@@ -300,26 +305,34 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string, own: readonly string[] = []): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
+    const remote = this.host.remoteWorkers === true
+    const mcp = remote ? agent.ctx.tools.schemas(parent).map(tool => tool.name).filter(workerMcp) : []
+    const allow = [...WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)), ...mcp]
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
-    }), ...this.host.remoteWorkers ? [agent.ctx.tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own])))] : []]
+    }), ...remote ? [agent.ctx.tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), workerMcp))] : []]
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's
-   * permissions, gets the same work tools as the worker, and none once the worker's ticket ended. Any other agent is left as
-   * it is.
+   * permissions, gets the same work tools as the worker, and none once the worker's ticket ended. With `remoteWorkers`, a
+   * subagent whose parents cannot be followed, or whose worker's ticket is gone, gets no tools. Any other agent is left as it is.
    */
   private limitSubagent(agent: Agent): void {
     let parent = agent.session.header.parentSession
+    let unplaced = false
     // Up the subagents' parents to the worker, which are loaded while their subagents run.
-    for (let depth = 0; parent !== undefined && ticketOfSession(parent) === undefined && depth < 8; depth++) {
-      parent = this.ctx.agents.get(parent)?.session.header.parentSession
+    for (let depth = 0; parent !== undefined && ticketOfSession(parent) === undefined; depth++) {
+      const next = depth < 8 ? this.ctx.agents.get(parent) : undefined
+      if (!next) { unplaced = true; break }
+      parent = next.session.header.parentSession
     }
     const ticketId = parent === undefined ? undefined : ticketOfSession(parent)
-    if (ticketId === undefined || !this.host.store.tickets.get(ticketId)) return
-    this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
+    if (ticketId !== undefined && this.host.store.tickets.get(ticketId)) {
+      this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
+    } else if (this.host.remoteWorkers && (unplaced || ticketId !== undefined)) {
+      this.bindings.set(agent, { disposers: [agent.ctx.tools.guard(() => 'dsh-superagent cannot tell whose subagent this is; its tools are refused')], subagent: true })
+    }
   }
   /** Register the skills of a prompt version in the agent's skill scope, in place of an earlier version's. */
   private bindSkills(binding: SessionBinding, version: PromptVersion): void {

@@ -132,8 +132,9 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
   return { service, settle, spawn, live: (id: string) => !!children.get(id)?.live }
 }
 
-/** `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH services. */
-export async function startRuntime(seed?: (store: Store) => void, options: { machine?: Partial<Machine>; without?: readonly string[] } = {}) {
+/** `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH services; `globalTools` are the tools every agent inherits. */
+export async function startRuntime(seed?: (store: Store) => void,
+  options: { machine?: Partial<Machine>; without?: readonly string[]; globalTools?: readonly string[] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -175,7 +176,9 @@ export async function startRuntime(seed?: (store: Store) => void, options: { mac
       const sessionTools = new Map<string, RegisteredTool>()
       tools.set(sessionId, sessionTools)
       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
-      agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
+      const inherited = options.globalTools ?? []
+      agentCtx.reflect.provide('tools', { register, get: (name: string) => inherited.includes(name) ? { name } : undefined,
+        schemas: () => inherited.map(name => ({ name })), restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
       agentCtx.reflect.provide('skills', { register: () => () => {} })
       agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
