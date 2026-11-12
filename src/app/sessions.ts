@@ -31,6 +31,8 @@ export interface SessionsHost {
   readonly health: HealthEntry
   readonly masterId: string
   readonly lifetime: AbortSignal
+  /** Whether Sessions may run without DSH's permission presets, as their tools run in remote sandboxes. */
+  readonly remoteWorkers?: boolean
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -149,7 +151,9 @@ export class Sessions {
     const settings = this.host.store.settings()
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
     await this.decorate(result.agent)
-    ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
+    const presets = ctx.get('permissionPresets')
+    if (presets) presets.set(result.agent.session, 'danger-full-access')
+    else if (!this.host.remoteWorkers) throw new Error('DSH\'s permission presets service is unavailable')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
   }

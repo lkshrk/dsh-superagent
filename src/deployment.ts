@@ -5,7 +5,10 @@ import { delimiter, isAbsolute, join } from 'node:path'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
-import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { scrubbedParentEnv, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import { commandError } from './infra/commands.ts'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
 
@@ -20,6 +23,9 @@ export const Config = s.object({
     .description('Pages of thread context one assessment may read.').volatile(),
   admissionContextTimeoutMs: s.number().min(LIMITS.admissionContextTimeoutMs.min).max(LIMITS.admissionContextTimeoutMs.max).step(1)
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
+  remoteWorkers: s.boolean().default(false).description('Sessions run their tools in remote sandboxes, such as under dsh-yawn: setup checks run on this host, the prepare command does not run, '
+    + 'and the process environment is left unchanged, so worker shells use the sandbox\'s own gh and git.'),
+  authenticatedPanel: s.boolean().default(false).description('Serve the management API on a non-loopback Web server, admitting only requests DSH\'s browser sign-in authenticates.'),
 })
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
@@ -27,6 +33,8 @@ export interface Machine {
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
+  remoteWorkers: boolean
+  authenticatedPanel: boolean
 }
 const MOVED: Record<string, string> = {
   repository: 'on the GitHub Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
@@ -38,8 +46,8 @@ const MOVED: Record<string, string> = {
 export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
-  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel } = config
+  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel }
 }
 
 export const GithubAccountsSchema = z.object({
@@ -73,6 +81,16 @@ export type Probe = (argv: string[]) => Promise<string>
 export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
   return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+}
+
+const exec = promisify(execFile)
+/** Run startup checks on this host with the environment DSH's subprocess service would give them, for workers whose shells run elsewhere. */
+export function localProbe(stateDir: string, cwd: string, signal: AbortSignal): Probe {
+  const env = { ...scrubbedParentEnv(), PATH: withoutDirectory(process.env.PATH ?? '', workerBin(stateDir)) }
+  return async ([program, ...args]) => {
+    try { return (await exec(program!, args, { cwd, env, signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]), maxBuffer: 1 << 20 })).stdout }
+    catch (error) { throw commandError(error, program) }
+  }
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })

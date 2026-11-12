@@ -94,6 +94,7 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 | --- | --- | --- |
 | `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
+| `remoteWorkers`, `authenticatedPanel` | no | Off by default; for a host whose Sessions run their tools in remote sandboxes, see [Running under dsh-yawn](#running-under-dsh-yawn) |
 
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
 
@@ -215,7 +216,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 ## Setup checks
 
-Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
+Setup uses the DeepSeek Harness subprocess service, as worker shells do, unless `remoteWorkers` is on. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
 Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
 
@@ -225,6 +226,46 @@ The process environment that setup writes:
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
+
+## Running under dsh-yawn
+
+[dsh-yawn](https://github.com/zhming0/dsh-yawn) runs DeepSeek Harness as one shared control plane whose Sessions run their file and shell tools in a sandbox per Session. Two flags adapt dsh-superagent to it; with both off it runs as described above.
+
+Install a pinned commit into the control plane's `web` profile:
+
+```sh
+dsh plugin --profile web add "github:<owner>/dsh-superagent#<commit>"
+```
+
+pnpm builds a Git install through the `prepare` script and blocks it until allowed: add the key pnpm prints under `allowBuilds` in the profile's `pnpm-workspace.yaml`, then run the command again.
+
+Configure the entry in the profile's `cordis.patch.yml`:
+
+```yaml
+- id: dsh-superagent
+  config:
+    stateDir: /data/.dsh-superagent
+    remoteWorkers: true
+    authenticatedPanel: true
+```
+
+`remoteWorkers: true`:
+
+- Setup runs the agent and bot CLIs on the control plane with `execFile` instead of the subprocess service, which dsh-yawn serves only inside an agent turn. Variables whose names contain KEY, PASSWORD, SECRET or TOKEN are still removed, and the worker shims are left off `PATH`.
+- The process environment stays unchanged: no shims on `PATH`, no `GIT_CONFIG_GLOBAL`. Worker shells run in the sandbox and use its own `gh` and `git`. Blocked commands are not enforced there.
+- A Ticket directory is an empty directory on the control plane that anchors the worker's Session. The prepare command does not run; the sandbox clones the repository, and the worker starts on its default branch, so the team prompt sections should tell workers to create the ticket branch.
+- Sessions start without DeepSeek Harness's permission presets, which dsh-yawn disables; its sandboxes always run with full access.
+
+`authenticatedPanel: true`:
+
+- The Web server may bind a non-loopback address, such as the pod IP.
+- Each `/orchestrator/api/` request must pass DeepSeek Harness's own Connection check: its Host and Origin check against `trustedHosts`, and its browser sign-in cookie, which dsh-yawn's passcode or OIDC sign-in sets. The `x-orchestrator-request` header is still required. Requests without the cookie, including loopback ones such as `scripts/dsh-superagent status`, receive 403.
+
+On the dsh-yawn side:
+
+- **Sandbox repository.** dsh-superagent's Session directories are under `stateDir`, not dsh-yawn repository Workspaces, so dsh-yawn clones the sandbox manager's `repository` setting into their sandboxes. Set it to the HTTPS URL of the GitHub Source's repository. It applies to every Session outside a repository Workspace.
+- **`GITHUB_TOKEN`.** Store the agent account's token in dsh-yawn's secret store, scoped to that repository's URL. Sandboxes receive it: `gh` reads it, and git uses it through dsh-yawn's credential helper.
+- **Agent CLI.** The GitHub Source's agent CLI runs on the control plane, for setup, polling and replies. It must be an absolute path to a `gh` wrapper that signs in as the agent account, for example by exporting `GH_TOKEN` from a mounted secret file before running `gh`, since setup removes `GH_TOKEN` and `GITHUB_TOKEN` from its environment.
 
 ## Try it
 
