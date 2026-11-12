@@ -5,12 +5,14 @@ import { defaultPrompts, savePrompts, type Prompts, type TeamSection } from './p
 import type { Settings } from './settings.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
+import type { SourceRegistry } from '../sources/registry.ts'
 
 export interface ManagedHost {
   readonly settings: Pick<Settings, 'block' | 'save'>
   readonly store: Pick<Store, 'atomic'>
   readonly prompts: Pick<Prompts, 'current' | 'save'>
   readonly sessions: Pick<Sessions, 'notify' | 'delivery'>
+  readonly sources: Pick<SourceRegistry, 'kind' | 'policyPart'>
   warn(message: string): void
 }
 
@@ -23,16 +25,10 @@ async function saveBlock(host: ManagedHost, block: SettingsBlock, merge: (curren
   } catch (error) { host.warn(`managed ${block} settings were not applied: ${reason(error)}`) }
 }
 
-/** Applies the managed policy, eval and executor blocks and team prompt sections; Source blocks wait for their kind, see `applyManagedSource`. */
+/** Applies the managed policy rules, eval and executor blocks and team prompt sections; each Source's parts wait for its kind, see `applyManagedSource`. */
 export async function applyManaged(host: ManagedHost, managed: Managed): Promise<void> {
   const { policy, eval: evaluation, executor, prompts } = managed
-  if (policy) {
-    await saveBlock(host, 'policy', current => {
-      const sources = current.sources as Record<string, Record<string, unknown>>
-      return { ...current, ...policy.rules ? { rules: policy.rules } : {},
-        sources: { ...sources, ...Object.fromEntries(Object.entries(policy.sources ?? {}).map(([id, part]) => [id, { ...sources[id], ...part }])) } }
-    })
-  }
+  if (policy?.rules) await saveBlock(host, 'policy', current => ({ ...current, rules: policy.rules }))
   if (evaluation) await saveBlock(host, 'eval', current => ({ ...current, ...evaluation }))
   if (executor) await saveBlock(host, 'executor', current => ({ ...current, ...executor }))
   if (prompts) {
@@ -47,10 +43,25 @@ export async function applyManaged(host: ManagedHost, managed: Managed): Promise
   }
 }
 
-/** Applies the managed block of Source `id`, which can be saved only once its kind is registered. */
+/** Applies the managed block and policy part of Source `id`, which can be saved only once its kind is registered. */
 export async function applyManagedSource(host: ManagedHost, managed: Managed, id: string): Promise<void> {
-  const part = managed.sources?.[id]
+  const block = managed.sources?.[id]
+  if (block) {
+    await saveBlock(host, `source:${id}`, current => ({ enabled: block.enabled ?? current.enabled,
+      config: { ...current.config as Record<string, unknown>, ...block.config } }))
+  }
+  const part = managed.policy?.sources?.[id]
   if (!part) return
-  await saveBlock(host, `source:${id}`, current => ({ enabled: part.enabled ?? current.enabled,
-    config: { ...current.config as Record<string, unknown>, ...part.config } }))
+  const sync = host.sources.kind(id)?.policy?.sync
+  const stored = host.sources.policyPart(id)
+  // A Source whose roster sync is ready owns its allowed list, as `Settings.syncable` decides; managing it too would make every start save.
+  const owned = 'allowed' in part && sync !== undefined && stored !== undefined && sync.ready({ ...stored, ...part })
+  if (owned) host.warn(`managed policy.sources.${id}.allowed was not applied: the Source's ${id} roster sync owns it`)
+  const { allowed: _allowed, ...rest } = part
+  const applied = owned ? rest : part
+  if (!Object.keys(applied).length) return
+  await saveBlock(host, 'policy', current => {
+    const sources = current.sources as Record<string, Record<string, unknown>>
+    return { ...current, sources: { ...sources, [id]: { ...sources[id], ...applied } } }
+  })
 }

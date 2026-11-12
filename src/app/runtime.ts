@@ -112,7 +112,7 @@ export class Runtime extends Service implements SourceHost {
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
           .catch(() => { /* sync() records its failure in health. */ })
         const managed = machine.managed
-        if (managed?.sources?.[kind.kind]) void this.ready?.then(() => applyManagedSource(this.managedHost(), managed, kind.kind))
+        if (managed?.sources?.[kind.kind] || managed?.policy?.sources?.[kind.kind]) void this.ready?.then(() => applyManagedSource(this.managedHost(), managed, kind.kind))
         return () => {}
       })
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
@@ -221,8 +221,8 @@ export class Runtime extends Service implements SourceHost {
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private managedHost(): ManagedHost {
-    const { settings, store, prompts, sessions } = this
-    return { settings, store, prompts, sessions, warn: message => { this.ctx.logger.warn('dsh-superagent: %s', message) } }
+    const { settings, store, prompts, sessions, sources } = this
+    return { settings, store, prompts, sessions, sources, warn: message => { this.ctx.logger.warn('dsh-superagent: %s', message) } }
   }
   private httpHost(): HttpHost {
     const runtime = this

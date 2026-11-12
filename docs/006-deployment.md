@@ -179,9 +179,11 @@ A deployment that keeps its configuration in files can manage settings from the 
 ```
 
 - `sources.<id>`: `enabled` and the keys of `config` set on that Source's block, applied once its kind is registered.
-- `policy`: `rules` replaces the rules; `sources.<id>` sets the named keys of that Source's part, such as `allowed` and `admission`.
+- `policy`: `rules` replaces the rules; `sources.<id>` sets the named keys of that Source's part, such as `allowed` and `admission`, also once its kind is registered. A Source whose roster sync is ready, such as Feishu with a sync chat, owns its `allowed` list: a managed `allowed` for it is skipped with a warning, and its other keys still apply. GitHub has no roster sync.
 - `eval` and `executor`: the named keys of those blocks.
 - `prompts.<section>` for `communication`, `scope` and `delivery`: the whole section text, or `{ append: text }` for the built-in section followed by `text`.
+
+Each named key replaces the stored value whole; nested values such as `eval.model`, `executor.blockedCommands` or a policy part's `allowed` list are not merged. A managed change to a Source's account or repository restarts dsh-superagent once to run setup again, as the same panel change does.
 
 Keys left out stay editable in the panel. The panel does not mark managed keys; a panel change to one is reset at the next start.
 
