@@ -29,6 +29,7 @@ import { evalsHealth } from './views/overview.ts'
 import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
+import { applyManaged, applyManagedSource, type ManagedHost } from './managed.ts'
 import { registerHttp, type HttpHost } from './http.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
@@ -110,6 +111,8 @@ export class Runtime extends Service implements SourceHost {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
           .catch(() => { /* sync() records its failure in health. */ })
+        const managed = machine.managed
+        if (managed?.sources?.[kind.kind]) void this.ready?.then(() => applyManagedSource(this.managedHost(), managed, kind.kind))
         return () => {}
       })
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
@@ -201,6 +204,7 @@ export class Runtime extends Service implements SourceHost {
   private async initialize(): Promise<void> {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
+    if (this.machine.managed) await applyManaged(this.managedHost(), this.machine.managed)
     if (!await this.setup.run(this.store.settings())) {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
@@ -215,6 +219,10 @@ export class Runtime extends Service implements SourceHost {
     this.passes.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+  }
+  private managedHost(): ManagedHost {
+    const { settings, store, prompts, sessions } = this
+    return { settings, store, prompts, sessions, warn: message => { this.ctx.logger.warn('dsh-superagent: %s', message) } }
   }
   private httpHost(): HttpHost {
     const runtime = this

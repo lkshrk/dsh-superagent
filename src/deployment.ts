@@ -11,6 +11,7 @@ import { scrubbedParentEnv, type SubprocessRuntime } from '@deepseek-ai/dsh-subp
 import { commandError } from './infra/commands.ts'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { ManagedSchema, type Managed } from './managed.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -25,6 +26,7 @@ export const Config = s.object({
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
   remoteWorkers: s.boolean().default(false).description('Sessions run their tools in remote sandboxes, such as under dsh-yawn: setup checks run on this host, the prepare command does not run, '
     + 'and the process environment is left unchanged, so worker shells use the sandbox\'s own gh and git.'),
+  managed: s.any().description('Settings and team prompt sections this configuration manages; applied at every start like a panel save. See docs/006-deployment.md.'),
   authenticatedPanel: s.boolean().default(false).description('Serve the management API on a non-loopback Web server, admitting only requests DSH\'s browser sign-in authenticates.'),
 })
 export type DeploymentConfig = ReturnType<typeof Config>
@@ -35,6 +37,7 @@ export interface Machine {
   admissionContextTimeoutMs: Volatile<number>
   remoteWorkers: boolean
   authenticatedPanel: boolean
+  managed?: Managed
 }
 const MOVED: Record<string, string> = {
   repository: 'on the GitHub Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
@@ -47,7 +50,9 @@ export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
   const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel }
+  const managed = config.managed === undefined || config.managed === null ? undefined : ManagedSchema.safeParse(config.managed)
+  if (managed && !managed.success) throw new Error(`dsh-superagent configuration has an invalid managed block: ${managed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`)
+  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel, ...managed ? { managed: managed.data } : {} }
 }
 
 export const GithubAccountsSchema = z.object({

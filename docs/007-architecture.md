@@ -325,6 +325,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
 | `src/app/settings.ts` | Settings |
+| `src/app/managed.ts` | Applies the settings and team prompt sections the plugin configuration manages, at every start |
+| `src/managed.ts` | The schema of the plugin configuration's `managed` block |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
@@ -428,6 +430,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/remote-workers.spec.ts` | A host whose Sessions run their tools in remote sandboxes: setup on the host, no prepare command, no permission presets |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the signed-in check behind DSH's browser sign-in, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/managed.spec.ts` | Managed settings and prompt sections: applied at start, idempotent, restoring a panel change, refusing an invalid block |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |

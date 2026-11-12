@@ -63,6 +63,7 @@ const TEXT = {
   rules: ['接单规则', 'Accept rules'],
   remove: ['删除', 'Delete'],
   'historySource.panel': ['管理页', 'Management page'],
+  'historySource.config': ['插件配置', 'Plugin configuration'],
   'historySource.defaults': ['插件默认值', 'Plugin defaults'],
   'historySource.tool': ['主 Session 工具', 'Main Session tool'],
   'historySource.sync': ['从群同步', 'Sync'],

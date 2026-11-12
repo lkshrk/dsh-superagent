@@ -42,13 +42,13 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     parse: value => ExecutorConfigSchema.parse(value),
     merge: (settings, value) => ({ ...settings, executor: value as SettingsValue['executor'] }),
     // Only the management panel may modify shell execution paths or commands.
-    guard: (current, candidate, origin) => { if (origin !== 'panel' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
+    guard: (current, candidate, origin) => { if (origin !== 'panel' && origin !== 'config' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
   },
   source: {
     parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
     // Only the management panel may switch source accounts.
-    guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
+    guard: (current, candidate, origin) => { if (origin !== 'panel' && origin !== 'config' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
   },
 }
 

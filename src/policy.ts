@@ -106,7 +106,7 @@ export const SettingsSchema = z.object({
 export type Settings = z.infer<typeof SettingsSchema>
 export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
-export type SettingsOrigin = 'panel' | 'tool' | 'sync'
+export type SettingsOrigin = 'panel' | 'tool' | 'sync' | 'config'
 
 export const POLICY_REVISION = 'mandate-v3'
 /**

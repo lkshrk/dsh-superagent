@@ -94,6 +94,7 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 | --- | --- | --- |
 | `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
+| `managed` | no | Settings and team prompt sections this configuration manages, see [Managed settings](#managed-settings) |
 | `remoteWorkers`, `authenticatedPanel` | no | Off by default; for a host whose Sessions run their tools in remote sandboxes, see [Running under dsh-yawn](#running-under-dsh-yawn) |
 
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
@@ -156,6 +157,33 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
+
+### Managed settings
+
+A deployment that keeps its configuration in files can manage settings from the plugin configuration instead of the panel. The `managed` block is applied at every start, before setup, through the same saves the panel makes: each block's schema validates it, a policy change takes effect as a panel save's would, and the history names the plugin configuration as its source. A block or Source that fails validation is left as stored and logged; the others still apply. Without `managed`, nothing changes.
+
+```yaml
+- id: dsh-superagent
+  config:
+    stateDir: /srv/superagent
+    managed:
+      sources:
+        github: { config: { repository: acme/widgets, cli: /usr/local/bin/gh-agent, observeIssues: false } }
+      policy:
+        sources:
+          github: { allowed: [{ id: alice }] }
+      eval: { mode: observe }
+      executor: { maxWorkers: 1 }
+      prompts:
+        delivery: { append: "Create the branch agent/$DSH_SUPERAGENT_NAME before your first commit." }
+```
+
+- `sources.<id>`: `enabled` and the keys of `config` set on that Source's block, applied once its kind is registered.
+- `policy`: `rules` replaces the rules; `sources.<id>` sets the named keys of that Source's part, such as `allowed` and `admission`.
+- `eval` and `executor`: the named keys of those blocks.
+- `prompts.<section>` for `communication`, `scope` and `delivery`: the whole section text, or `{ append: text }` for the built-in section followed by `text`.
+
+Keys left out stay editable in the panel. The panel does not mark managed keys; a panel change to one is reset at the next start.
 
 ### Management API
 
