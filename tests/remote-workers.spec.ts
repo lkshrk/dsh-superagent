@@ -47,8 +47,10 @@ it('refuses tools a host registers on each agent, such as dsh-yawn\'s session to
     await h.runtime.idle()
     const worker = `worker-${h.runtime.store.tickets.list()[0]!.id}`
     const check = (sessionId: string, name: string) => {
-      const guards = vi.mocked(h!.agents.get(sessionId)!.ctx.tools.guard).mock.calls.map(([guard]) => guard)
-      return guards.map(guard => guard({ name, arguments: {} } as never)).find(reason => reason !== undefined)
+      type Guard = (execution: { name: string; arguments: unknown }) => string | undefined
+      const agent = h!.agents.get(sessionId) as unknown as { ctx: { tools: { guard: (guard: Guard) => () => void } } }
+      const guards = vi.mocked(agent.ctx.tools.guard).mock.calls.map(([guard]) => guard)
+      return guards.map(guard => guard({ name, arguments: {} })).find(reason => reason !== undefined)
     }
     const result = {
       worker: ['create_session', 'install_bundle', 'plugin_source', 'bash', 'orchestrator_report'].map(name => check(worker, name)),
