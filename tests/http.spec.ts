@@ -10,10 +10,12 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1', connection?: { requestRejection(req: { headers: Headers }): number | undefined }) {
   let handler: Handler = async () => {}
-  const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-  registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost)
+  const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } },
+    get: (name: string) => name === 'connection' ? connection : undefined }
+  const machine = { authenticatedPanel: false, ...runtime.machine as object }
+  registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime, machine } as unknown as HttpHost)
   return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
     let status = 0, text = ''
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
@@ -78,6 +80,23 @@ it('answers only a same-origin request from the panel on the loopback address', 
   expect(await post({ host: 'localhost:3082', origin: 'http://localhost:3082' })).toMatchObject({ status: 200 })
   // Management routes require a loopback Web server.
   expect(() => serve({}, '0.0.0.0')).toThrow('Orchestrator management requires a loopback Web server')
+})
+
+it('answers only a signed-in request from the panel when DSH\'s browser sign-in guards a non-loopback Web server', async () => {
+  // As DSH's Connection does: 403 for a foreign Host or Origin, 401 without its sign-in cookie.
+  const connection = { requestRejection: ({ headers }: { headers: Headers }) => headers.host !== 'dsh.example' ? 403
+    : headers.origin !== undefined && headers.origin !== 'https://dsh.example' ? 403 : headers.cookie === 'signed-in' ? undefined : 401 }
+  const runtime = { machine: { authenticatedPanel: true }, sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } }
+  const call = serve(runtime, '10.0.0.5', connection)
+  const post = (headers: Headers) => call('POST', 'threads/github%3A1/unsubscribe', undefined, { host: 'dsh.example', cookie: 'signed-in', ...headers })
+  for (const headers of [{ cookie: undefined }, { 'x-orchestrator-request': undefined }, { host: '127.0.0.1:3082' }, { origin: 'https://evil.example' }]) {
+    expect(await post(headers), JSON.stringify(headers)).toEqual({ status: 403, body: { error: 'Signed-in management request required' } })
+  }
+  expect(await post({ origin: 'https://dsh.example' })).toMatchObject({ status: 200 })
+  // Without DSH's Connection service nothing is admitted.
+  const closed = serve(runtime, '10.0.0.5')
+  expect(await closed('POST', 'threads/github%3A1/unsubscribe', undefined, { host: 'dsh.example', cookie: 'signed-in' }))
+    .toEqual({ status: 403, body: { error: 'Signed-in management request required' } })
 })
 
 it('answers a prompt save that lost a race with 409, and a settings body over 128 KiB with 400', async () => {

@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { Config, type Machine } from '../src/deployment.ts'
-import { apply } from '../src/index.ts'
+import { apply, inject } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
 const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
@@ -59,4 +59,8 @@ it('refuses keys of the previous configuration before registering anything', asy
   await expect(apply(ctx as never, Config({ stateDir: '/srv/state', github: { cli: 'gh' } } as never))).rejects.toThrow('github (now on the GitHub Source)')
   expect(ctx.on).not.toHaveBeenCalled()
   expect(ctx.inject).not.toHaveBeenCalled()
+})
+
+it('loads without DSH\'s permission presets, which a host whose shells run in remote sandboxes leaves out', () => {
+  expect(inject).not.toContain('permissionPresets')
 })

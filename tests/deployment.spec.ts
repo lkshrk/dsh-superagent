@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, localProbe, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -46,13 +46,27 @@ describe('configuration schema', () => {
     // Limits are volatile references that the loader updates in place and callers read when used.
     expect({ ...read, promptMaxChars: read.promptMaxChars.get(), admissionContextMaxPages: read.admissionContextMaxPages.get(),
       admissionContextTimeoutMs: read.admissionContextTimeoutMs.get() })
-      .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 })
+      .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000,
+        remoteWorkers: false, authenticatedPanel: false })
     expect(() => Config(minimal({ stateDir: 'relative/dir' }))).toThrow()
     expect(() => Config(minimal({ stateDir: '~/dir' }))).toThrow()
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })
     expect(() => machineOf(Config(raw))).toThrow('keys it does not use: repository (now on the GitHub Source), repositoryPath (now in the prepare command of the Execution settings), blockedCommands (now in the Execution settings), author (now prompt text), extra;')
+  })
+})
+
+describe('local probe', () => {
+  it('runs a check on this host without credential-shaped variables or the worker shims on PATH', async () => {
+    vi.stubEnv('AGENT_TOKEN', 'secret'); vi.stubEnv('DSH_HOME', '/srv/dsh'); vi.stubEnv('PATH', path)
+    try {
+      const probe = localProbe(join(dir, 'state'), join(dir, 'widgets'), new AbortController().signal)
+      const [token, home, cwd, searched] = (await probe(['sh', '-c', 'printf "%s\\n" "${AGENT_TOKEN-unset}" "${DSH_HOME-unset}" "$PWD" "$PATH"'])).split('\n')
+      expect([token, home, cwd]).toEqual(['unset', 'unset', join(dir, 'widgets')])
+      expect(searched!.split(':')).toEqual([join(dir, 'bin'), '/usr/bin', '/bin'])
+      await expect(probe(['sh', '-c', 'echo denied >&2; exit 3'])).rejects.toThrow('denied')
+    } finally { vi.unstubAllEnvs() }
   })
 })
 

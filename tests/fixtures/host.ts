@@ -17,6 +17,7 @@ import { Commands } from '../../src/infra/commands.ts'
 import { credentialHelper, workerGitConfig } from '../../src/infra/environment.ts'
 import type { Trigger } from '../../src/core/index.ts'
 import { testMachine } from './deployment.ts'
+import type { Machine } from '../../src/deployment.ts'
 
 export const MEMBER = 'ou_alice'
 export const CHAT = 'oc_team'
@@ -132,7 +133,8 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 }
 
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
-export async function startRuntime(seed?: (store: Store) => void) {
+/** `machine` overrides the test machine; `without` leaves out DSH services, as a composition without them does. */
+export async function startRuntime(seed?: (store: Store) => void, options: { machine?: Partial<Machine>; without?: readonly string[] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -242,15 +244,21 @@ export async function startRuntime(seed?: (store: Store) => void) {
     sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
-  for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
+  for (const [name, service] of Object.entries(services)) if (!options.without?.includes(name)) ctx.reflect.provide(name, service)
+  // The CLIs answer as the faked subprocess service does, for setup checks that run them on this host.
+  for (const cli of [AGENT, BOT]) {
+    const cases = Object.entries(answers).filter(([command]) => command.startsWith(`${cli} `))
+      .map(([command, output]) => `  ${JSON.stringify(command.slice(cli.length + 1))}) printf '%s\\n' '${output}' ;;`)
+    writeFileSync(cli, ['#!/bin/sh', 'case "$*" in', ...cases, 'esac', ''].join('\n'), { mode: 0o755 })
+  }
   const seeded = new Store(join(directory, 'orchestrator.sqlite'))
   const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()
-  const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
-  await runtime.ready
+  const runtime = new Runtime(ctx, testMachine({ stateDir: directory, ...options.machine }), vi.fn())
+  try { await runtime.ready }
+  catch (error) { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }); throw error }
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
