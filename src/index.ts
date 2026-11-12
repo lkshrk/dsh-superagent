@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
-import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
+import { Config, machineOf, type DeploymentConfig, type Machine } from './deployment.ts'
 
 export const name = 'dsh-superagent'
 export const inject = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'tools', 'systemPrompt', 'skills', 'webServer', 'llm', 'subprocess']
@@ -18,6 +18,11 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   const restart = (): void => {
     ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
   }
+  // Sessions on this host need DSH's permission presets; remote sandboxes run without them, and dsh-yawn leaves them out.
+  if (machine.remoteWorkers) await start(ctx, machine, restart)
+  else ctx.inject(['permissionPresets'], child => start(child, machine, restart))
+}
+async function start(ctx: Context, machine: Machine, restart: () => void): Promise<void> {
   const runtime = new Runtime(ctx, machine, restart)
   ctx.effect(() => async () => { await runtime.stop() })
   await runtime.ready

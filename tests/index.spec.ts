@@ -1,5 +1,7 @@
-import { expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { describe, expect, it, vi } from 'vitest'
 import { Config, type Machine } from '../src/deployment.ts'
+import * as plugin from '../src/index.ts'
 import { apply, inject } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
@@ -19,7 +21,9 @@ function context() {
   const describe = vi.fn(() => [])
   const ctx = {
     on: vi.fn((name: string, handler: () => void) => { handlers.set(name, handler) }),
-    inject: vi.fn((_services: string[], callback: (child: unknown) => void) => { callback({ effect: (effect: () => unknown) => effect(), settings: { configure } }) }),
+    inject: vi.fn((services: string[], callback: (child: unknown) => void) => {
+      callback(services.includes('permissionPresets') ? ctx : { effect: (effect: () => unknown) => effect(), settings: { configure } })
+    }),
     effect: vi.fn(),
     fiber: { restart: vi.fn(async () => {}) },
     get: vi.fn((name: string) => name === 'settings' ? { describe } : undefined),
@@ -63,4 +67,28 @@ it('refuses keys of the previous configuration before registering anything', asy
 
 it('loads without DSH\'s permission presets, which a host whose shells run in remote sandboxes leaves out', () => {
   expect(inject).not.toContain('permissionPresets')
+})
+
+describe('permission presets', () => {
+  const services = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'tools', 'systemPrompt', 'skills', 'webServer', 'llm', 'subprocess']
+  async function host(remoteWorkers: boolean) {
+    const ctx = new Context()
+    for (const name of services) ctx.reflect.provide(name, {})
+    const before = runtimes.length
+    await ctx.plugin(plugin as never, { stateDir: '/srv/state', remoteWorkers } as never)
+    return { ctx, started: () => runtimes.length - before }
+  }
+  it('starts the Runtime on this host only once DSH\'s permission presets are active, and again after they restart', async () => {
+    const { ctx, started } = await host(false)
+    expect(started()).toBe(0)
+    const presets = ctx.reflect.provide('permissionPresets', { set: () => {} })
+    await vi.waitFor(() => { expect(started()).toBe(1) })
+    presets()
+    ctx.reflect.provide('permissionPresets', { set: () => {} })
+    await vi.waitFor(() => { expect(started()).toBe(2) })
+  })
+  it('starts the Runtime without DSH\'s permission presets when workers run in remote sandboxes', async () => {
+    const { started } = await host(true)
+    expect(started()).toBe(1)
+  })
 })

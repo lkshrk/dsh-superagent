@@ -259,7 +259,7 @@ Configure the entry in the profile's `cordis.patch.yml`:
 `authenticatedPanel: true`:
 
 - The Web server may bind a non-loopback address, such as the pod IP.
-- Each `/orchestrator/api/` request must pass DeepSeek Harness's own Connection check: its Host and Origin check against `trustedHosts`, and its browser sign-in cookie, which dsh-yawn's passcode or OIDC sign-in sets. The `x-orchestrator-request` header is still required. Requests without the cookie, including loopback ones such as `scripts/dsh-superagent status`, receive 403.
+- Each `/orchestrator/api/` request must pass DeepSeek Harness's own Connection check. Its Host must be a loopback name, the bind address or one of `trustedHosts`, and an `Origin`, when sent, must match it. The browser sign-in cookie, which dsh-yawn's passcode or OIDC sign-in sets, is always required, also on loopback: requests without it, such as `scripts/dsh-superagent status`, receive 403. The `x-orchestrator-request` header is still required.
 
 On the dsh-yawn side:
 

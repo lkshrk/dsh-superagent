@@ -132,8 +132,7 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
   return { service, settle, spawn, live: (id: string) => !!children.get(id)?.live }
 }
 
-/** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
-/** `machine` overrides the test machine; `without` leaves out DSH services, as a composition without them does. */
+/** `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH services. */
 export async function startRuntime(seed?: (store: Store) => void, options: { machine?: Partial<Machine>; without?: readonly string[] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
