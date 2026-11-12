@@ -1,6 +1,6 @@
 /** A deployment whose Sessions run their tools in remote sandboxes (`remoteWorkers`), such as under dsh-yawn. */
 import { existsSync } from 'node:fs'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { latestAssignment } from '../src/core/index.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
@@ -35,4 +35,32 @@ it('starts a worker in its ticket directory without running the prepare command'
 
 it('refuses to start Sessions without DSH\'s permission presets when workers run on this host', async () => {
   await expect(startRuntime(undefined, { without: ['permissionPresets'] })).rejects.toThrow('permission presets service is unavailable')
+})
+
+it('refuses tools a host registers on each agent, such as dsh-yawn\'s session tools, only when workers run in remote sandboxes', async () => {
+  const refused = async (remoteWorkers: boolean) => {
+    h = await startRuntime(undefined, remoteWorkers ? { machine: { remoteWorkers }, without: ['permissionPresets'] } : {})
+    const trigger = feishu('1', '@bot 修一下回归')
+    h.runtime.receive(trigger)
+    await h.runtime.idle()
+    await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-regression', acknowledgement: '收到。' })
+    await h.runtime.idle()
+    const worker = `worker-${h.runtime.store.tickets.list()[0]!.id}`
+    const check = (sessionId: string, name: string) => {
+      const guards = vi.mocked(h!.agents.get(sessionId)!.ctx.tools.guard).mock.calls.map(([guard]) => guard)
+      return guards.map(guard => guard({ name, arguments: {} } as never)).find(reason => reason !== undefined)
+    }
+    const result = {
+      worker: ['create_session', 'install_bundle', 'plugin_source', 'bash', 'orchestrator_report'].map(name => check(worker, name)),
+      master: ['message_session', 'read', 'orchestrator_route'].map(name => check(h!.runtime.masterId, name)),
+    }
+    await h.stop(); h = undefined
+    return result
+  }
+  const denied = (name: string) => `${name} is not available to dsh-superagent Sessions`
+  expect(await refused(true)).toEqual({
+    worker: [denied('create_session'), denied('install_bundle'), denied('plugin_source'), undefined, undefined],
+    master: [denied('message_session'), undefined, undefined],
+  })
+  expect(await refused(false)).toEqual({ worker: [undefined, undefined, undefined, undefined, undefined], master: [undefined, undefined, undefined] })
 })

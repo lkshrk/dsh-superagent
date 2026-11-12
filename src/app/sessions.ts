@@ -62,6 +62,10 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+const MASTER_TOOLS = ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+/** Refuses tools outside `allowed`, including ones a host registers on each agent, which `restrict` cannot mask. */
+const onlyTools = (allowed: ReadonlySet<string>) => ({ name }: { name: string }): string | undefined =>
+  allowed.has(name) ? undefined : `${name} is not available to dsh-superagent Sessions`
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -262,13 +266,15 @@ export class Sessions {
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
-    for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
+    const own = host.tools(agent, ticket)
+    for (const tool of own) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: MASTER_TOOLS }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
+      if (host.remoteWorkers) binding.disposers.push(agent.ctx.tools.guard(onlyTools(new Set([...MASTER_TOOLS, ...own.map(tool => tool.name)]))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
-      binding.disposers.push(...this.workOnly(agent, ticket!.id))
+      binding.disposers.push(...this.workOnly(agent, ticket!.id, own.map(tool => tool.name)))
     }
   }
   /**
@@ -289,15 +295,16 @@ export class Sessions {
    * ended. A failed or blocked worker keeps its tools, so a person may continue it in its Session; only automated input waits
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
+   * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent.
    */
-  private workOnly(agent: Agent, ticketId: string): (() => void)[] {
+  private workOnly(agent: Agent, ticketId: string, own: readonly string[] = []): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
     const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
-    })]
+    }), ...this.host.remoteWorkers ? [agent.ctx.tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own])))] : []]
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's
