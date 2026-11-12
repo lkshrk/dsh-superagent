@@ -431,6 +431,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/remote-workers.spec.ts` | A host whose Sessions run their tools in remote sandboxes: setup on the host, no prepare command, no permission presets |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the signed-in check behind DSH's browser sign-in, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/state-lock-plugin.spec.ts` | The state directory lock through the plugin: handed to the Runtime, released on stop and on a failed start, a compromise stopping its work |
 | `tests/state-lock.spec.ts` | The state directory lock: a killed holder's lock taken once stale, a live holder's never |
 | `tests/managed.spec.ts` | Managed settings and prompt sections: applied at start, idempotent, restoring a panel change, refusing an invalid block |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |

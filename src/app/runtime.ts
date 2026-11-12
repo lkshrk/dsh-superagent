@@ -92,9 +92,8 @@ export class Runtime extends Service implements SourceHost {
     const runtime = this
     // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
     mkdirSync(machine.stateDir, { recursive: true, mode: 0o700 })
-    let release: () => void
-    if (locked) release = () => { void locked().catch(() => { /* Released already, or compromised. */ }) }
-    else release = lockSync(machine.stateDir, { stale: STATE_LOCK_STALE_MS, onCompromised: error => { this.lockCompromised(error) } })
+    // A lock handed in stays the caller's to release if construction fails.
+    const release = locked ? () => {} : lockSync(machine.stateDir, { stale: STATE_LOCK_STALE_MS, onCompromised: error => { this.lockCompromised(error) } })
     this.releaseLock = locked ?? (async () => { release() })
     let opened: Store | undefined
     try {
