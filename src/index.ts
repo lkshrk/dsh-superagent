@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
+import { lockStateDir } from './app/state-lock.ts'
 import { Config, machineOf, type DeploymentConfig, type Machine } from './deployment.ts'
 
 export const name = 'dsh-superagent'
@@ -23,7 +24,13 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   else ctx.inject(['permissionPresets'], child => start(child, machine, restart))
 }
 async function start(ctx: Context, machine: Machine, restart: () => void): Promise<void> {
-  const runtime = new Runtime(ctx, machine, restart)
+  let runtime: Runtime | undefined
+  const release = await lockStateDir(machine.stateDir, error => {
+    if (runtime) runtime.lockCompromised(error)
+    else ctx.logger.error('dsh-superagent lost its state directory lock: %s', error.message)
+  })
+  try { runtime = new Runtime(ctx, machine, restart, release) }
+  catch (error) { await release().catch(() => {}); throw error }
   ctx.effect(() => async () => { await runtime.stop() })
   await runtime.ready
   ctx.logger.info(runtime.configured() ? 'dsh-superagent ready; the Superagent sidebar entry opens the management panel' : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)

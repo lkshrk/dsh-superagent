@@ -5,10 +5,12 @@ import * as plugin from '../src/index.ts'
 import { apply, inject } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; stopped: boolean }[])
+const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; stopped: boolean; locked?: () => Promise<void> }[])
+const locks = vi.hoisted(() => ({ taken: [] as string[], released: 0 }))
+vi.mock('../src/app/state-lock.ts', () => ({ lockStateDir: async (dir: string) => { locks.taken.push(dir); return async () => { locks.released++ } } }))
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   ready = Promise.resolve()
-  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
+  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void, readonly locked?: () => Promise<void>) { runtimes.push(this) }
   stopped = false
   configured() { return true }
   async stop() { this.stopped = true }
@@ -95,4 +97,14 @@ describe('permission presets', () => {
     const { started } = await host(true)
     expect(started()).toBe(1)
   })
+})
+
+it('takes the state directory lock before it starts the Runtime, and hands it over', async () => {
+  const { ctx } = context()
+  locks.taken.length = 0
+  await apply(ctx as never, Config({ stateDir: '/srv/state' }))
+  expect(locks.taken).toEqual(['/srv/state'])
+  const released = locks.released
+  await runtimes.at(-1)!.locked!()
+  expect(locks.released).toBe(released + 1)
 })

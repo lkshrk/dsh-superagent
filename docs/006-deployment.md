@@ -92,7 +92,7 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
+| `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades. One dsh-superagent runs per state directory; a start waits up to 45 seconds for the lock of a process that was killed to go stale |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
 | `managed` | no | Settings and team prompt sections this configuration manages, see [Managed settings](#managed-settings) |
 | `remoteWorkers`, `authenticatedPanel` | no | Off by default; for a host whose Sessions run their tools in remote sandboxes, see [Running under dsh-yawn](#running-under-dsh-yawn) |
