@@ -83,8 +83,11 @@ export function signedIn(req: Pick<IncomingMessage, 'headers'>, connection: Conn
   return req.headers['x-orchestrator-request'] === '1' && connection !== undefined && connection.requestRejection(req) === undefined
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
+/** A Source package's schema may come from its own copy of zod, whose errors are no `z.ZodError` of this one. */
+const zodError = (error: unknown): error is z.ZodError => error instanceof z.ZodError
+  || (error instanceof Error && error.name === 'ZodError' && Array.isArray((error as { issues?: unknown }).issues))
 function failure(error: unknown): [number, Record<string, unknown>] {
-  if (error instanceof z.ZodError) {
+  if (zodError(error)) {
     const issues = error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message }))
     return [400, { error: `Invalid settings: ${issues.map(issue => issue.path).join(', ')}`, issues }]
   }

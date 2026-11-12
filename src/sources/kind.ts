@@ -91,6 +91,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   facts?(deployment: Deployment | undefined): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */
   schema: z.ZodType<C>
+  /** Configuration keys, such as credential file paths, that only the panel or the plugin configuration may change; unlike setup fields they need no setup check. */
+  accountFields?: readonly string[]
   fields: FieldSpec[]
   /** Health entry names owned by this kind under `health[...]`; no other kind or core loop may report them. */
   health: string[]

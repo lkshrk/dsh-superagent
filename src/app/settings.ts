@@ -164,6 +164,10 @@ export class Settings {
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
     rules.guard?.(current, candidate, origin)
+    if (kind === 'source' && origin !== 'panel' && origin !== 'config') {
+      const before = current.sources[id]?.config ?? {}, after = candidate.sources[id]?.config ?? {}
+      if ((sources.kind(id)?.accountFields ?? []).some(field => JSON.stringify(before[field]) !== JSON.stringify(after[field]))) throw new UserError('panelOnlyAccounts')
+    }
     if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
     if (stale()) throw new SettingsConflict('Settings changed during the checks. Reload before saving.')
     // Re-read current settings after async checks in case unrelated blocks were saved concurrently.

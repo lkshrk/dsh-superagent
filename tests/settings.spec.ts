@@ -99,3 +99,21 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   vi.mocked(Setup.prototype.configured).mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+
+it('lets only the panel and the plugin configuration change the account fields a Source kind declares', async () => {
+  h = await startRuntime()
+  const { settings, sources } = h.runtime
+  const { z } = await import('zod')
+  sources.register({ kind: 'vault', title: { zh: 'v', en: 'v' }, description: { zh: 'v', en: 'v' }, health: ['vault'], fields: [],
+    schema: z.object({ secretFile: z.string().default(''), pollSeconds: z.number().default(10) }).strict(), accountFields: ['secretFile'] })
+  const save = async (config: Record<string, unknown>, origin: 'panel' | 'config' | 'tool') => {
+    const { revision } = settings.block('source:vault')
+    return settings.save('source:vault', { enabled: true, config }, revision, origin)
+  }
+  await expect(save({ secretFile: '/tmp/stolen' }, 'tool')).rejects.toMatchObject({ code: 'panelOnlyAccounts' })
+  await save({ secretFile: '/run/secrets/vault' }, 'config')
+  await expect(save({ secretFile: '/tmp/stolen' }, 'tool')).rejects.toMatchObject({ code: 'panelOnlyAccounts' })
+  await save({ secretFile: '/run/secrets/vault', pollSeconds: 30 }, 'tool')
+  await save({ secretFile: '/run/secrets/other', pollSeconds: 30 }, 'panel')
+  expect(h.runtime.store.settings().sources.vault!.config).toEqual({ secretFile: '/run/secrets/other', pollSeconds: 30 })
+})
