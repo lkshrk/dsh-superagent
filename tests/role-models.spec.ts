@@ -59,6 +59,16 @@ it.each(['header', 'selection'])('preserves a resumed Session with existing %s',
   await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
   expect(resolve).not.toHaveBeenCalled()
 })
+it('seeds once when another selection lands while the route resolves', async () => {
+  const { ctx, agent, resolve } = await fixture()
+  resolve.mockImplementationOnce(async value => {
+    agent.session.append('model/selection', { provider: 'other', model: 'first' })
+    return value
+  })
+  await initializeRoleModel(ctx, agent, async () => ({ provider: 'worker', model: 'late' }))
+  expect(agent.session.snapshotEvents().filter(event => event.type === 'model/selection')).toEqual([
+    expect.objectContaining({ data: { provider: 'other', model: 'first' } })])
+})
 it('inherits the host when unset and fails unavailable routes before recording a selection', async () => {
   const { ctx, agent, resolve, request } = await fixture()
   await initializeRoleModel(ctx, agent, null)

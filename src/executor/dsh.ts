@@ -95,12 +95,7 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
 const LABELS_READ_MS = 5000
 const LABELS_READS = 2
 const LiveLabelsSchema = z.array(z.looseObject({ name: z.string() }))
-/**
- * The labels that pick a ticket's worker model: a GitHub Issue's or PR's current labels, read from GitHub (tried twice within
- * `LABELS_READ_MS`), or the origin trigger's `meta.labels` when the ticket did not come from GitHub, or the reads fail, time
- * out or return no readable `labels`.
- * @throws when `host.lifetime` aborts, so a stopping runtime picks no model from a guess.
- */
+/** A GitHub ticket's live labels, else its trigger's; throws when the runtime stops, so no model is seeded from a guess. */
 export async function ticketLabels(host: Pick<ExecutorHost, 'store' | 'commands' | 'lifetime'>, ticket: Ticket): Promise<unknown> {
   const source = sourceTrigger(host, ticket)
   const number = source?.meta.number
@@ -276,6 +271,8 @@ export class DshExecutor implements Executor {
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
   }
+  /** A lost state lock aborts the lifetime without closing; neither may mark a ticket failed. */
+  private shuttingDown(): boolean { return this.host.closing() || this.host.lifetime.aborted }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
     const execution = ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir)
@@ -381,7 +378,7 @@ export class DshExecutor implements Executor {
       // A failed prepare command is not retried automatically because an existing directory counts as prepared, so retrying
       // would treat whatever a failed prepare command left behind in the directory as a prepared workspace; instead the
       // ticket is marked failed and waits until new human input or an explicit retry arrives.
-      if (this.host.closing() || error instanceof Later) throw error
+      if (this.shuttingDown() || error instanceof Later) throw error
       if (!(error instanceof PrepareFailed) && this.retries(`launch:${assignmentId}`, error)) throw error
       this.launchFailed(ticketId, assignmentId, error)
     } finally { this.slots.free(ticketId) }
@@ -420,7 +417,7 @@ export class DshExecutor implements Executor {
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
-          if (this.host.closing() || error instanceof Later) throw error
+          if (this.shuttingDown() || error instanceof Later) throw error
           const current = this.host.store.tickets.get(ticketId)
           if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) return
           this.host.engine.deliveryFailed(ticketId, assignment.id, String(error))

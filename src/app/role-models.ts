@@ -17,16 +17,14 @@ export function workerModel(executor: Pick<Settings['executor'], 'model' | 'mode
   return executor.modelRules.find(rule => names.has(rule.label.toLowerCase()))?.model ?? executor.model
 }
 
-/**
- * Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact.
- * A `model` getter runs only when the session still takes a seeded model.
- */
+/** Seed a role's model onto a session before its first request; a `model` getter runs only when the seed still applies. */
 export async function initializeRoleModel(ctx: Context, agent: Agent, model: RoleModel | null | (() => Promise<RoleModel | null>)): Promise<void> {
   const seeded = () => !!agent.session.requestHeader() || agent.session.snapshotEvents().some(event => event.type === 'model/selection')
   if (!model || seeded()) return
   const chosen = typeof model === 'function' ? await model() : model
   if (!chosen || seeded()) return
   const selected = await resolveRoleModel(ctx, chosen)
+  if (seeded()) return
   // Avoid selectModel because it mutates the global DSH default; inject the selection for the initial request only.
   agent.session.append('model/selection', selected)
   let initial = true

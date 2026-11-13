@@ -535,6 +535,19 @@ describe('the worker model picked by the ticket\'s labels', () => {
     expect(agents.has(sessionId)).toBe(true)
     expect(selected(sessionId)).toBeUndefined()
   })
+  it('marks no ticket failed when the state lock is lost during the read', async () => {
+    let reading!: () => void
+    const started = new Promise<void>(resolve => { reading = resolve })
+    pull8(() => { reading(); return new Promise(() => {}) })
+    const accepted = accept(opened).catch(() => undefined)
+    await started
+    const ticket = runtime.store.tickets.list()[0]!
+    runtime.lockCompromised(new Error('state lock lost'))
+    await accepted
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(selected(`worker-${ticket.id}`)).toBeUndefined()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report?.state).not.toBe('failed')
+  })
   it('uses the labels another Source put on its trigger, without reading GitHub', async () => {
     const gh = vi.spyOn(Commands.prototype, 'gh')
     const trigger = feishu('1', '@bot 修一下回归')
