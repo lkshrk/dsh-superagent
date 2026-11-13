@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
-import type { Machine } from '../deployment.ts'
+import type { Deployment, Machine } from '../deployment.ts'
+import { sameName } from '../infra/text.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
@@ -67,7 +68,7 @@ export interface ExecutorHost {
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
   readonly health: HealthEntry
-  readonly machine: Pick<Machine, 'stateDir' | 'remoteWorkers'>
+  readonly machine: Pick<Machine, 'stateDir' | 'remoteWorkers' | 'repositoryWorkspaces'>
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
   readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
@@ -76,6 +77,8 @@ export interface ExecutorHost {
   paused(): boolean
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
+  /** The GitHub Source's repositories, once setup resolved them. */
+  repositories(): Pick<Deployment, 'repository' | 'repositories'> | undefined
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
@@ -236,7 +239,49 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const execution = ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir)
+    const repository = this.repositoryOf(ticket, outcome)
+    return { ...ticket, execution: { ...execution, ...repository ? { repository } : {} } }
+  }
+  /**
+   * The repository a new ticket works in: the one its origin Trigger came from, else the one the accept names, else the primary.
+   * @throws for a repository the GitHub Source does not list, which refuses the accept.
+   */
+  private repositoryOf(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): string | undefined {
+    const deployment = this.host.repositories()
+    if (!deployment) return undefined
+    const meta = this.host.store.triggers.get(ticket.origin.triggerId)?.meta
+    const named = typeof meta?.repository === 'string' && meta.repository ? meta.repository : outcome.repository
+    if (!named) return deployment.repository
+    const known = deployment.repositories.find(repository => sameName(repository, named))
+    if (!known) throw new Error(`${named} is not a repository of the GitHub Source`)
+    return known
+  }
+  /**
+   * The directory a ticket's worker Session starts in. With repository Workspaces under dsh-yawn, a new Session starts in the
+   * Workspace anchor of the ticket's repository, which all its tickets share, so dsh-yawn's sandbox clones that repository.
+   * @throws PrepareFailed when dsh-yawn cannot create the Workspace.
+   */
+  private async workspaceOf(ticket: Ticket): Promise<string> {
+    const execution = ticket.execution
+    const { machine, context } = this.host
+    if (!execution?.repository || !machine.remoteWorkers || !machine.repositoryWorkspaces) return execution?.directory ?? ''
+    // A Session keeps the directory it was created in, and with it its sandbox's repository.
+    if (context.agents.get(workerSessionId(ticket.id) as SessionId)) return execution.directory
+    const manager = context.get('sandboxManager') as { createRepositoryWorkspace?(url: string): Promise<string> } | undefined
+    if (!manager?.createRepositoryWorkspace) return execution.directory
+    // The URL form dsh-octo-sts registers Workspace secrets under, so both name one Workspace.
+    const url = `https://github.com/${execution.repository}`
+    const anchor = await manager.createRepositoryWorkspace(url).catch((error: unknown) => {
+      throw new PrepareFailed(`The dsh-yawn Workspace of ${url} could not be created: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    if (anchor !== execution.directory) {
+      this.host.store.atomic(() => {
+        const stored = this.host.store.tickets.get(ticket.id)
+        if (stored?.execution) this.host.store.tickets.save({ ...stored, execution: { ...stored.execution, directory: anchor } })
+      })
+    }
+    return anchor
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -431,7 +476,8 @@ export class DshExecutor implements Executor {
       return !!stored && liveTicket(stored) && latestAssignment(stored)?.id === assignment.id
     }
     const source = sourceTrigger(this.host, ticket)
-    const workspace = ticket.execution?.directory ?? ''
+    if (!current()) return
+    const workspace = await this.workspaceOf(ticket)
     if (!current()) return
     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
     if (!await stat(workspace).then(() => true, () => false)) {

@@ -1,7 +1,9 @@
 /** A deployment whose Sessions run their tools in remote sandboxes (`remoteWorkers`), such as under dsh-yawn. */
-import { existsSync } from 'node:fs'
-import { afterEach, expect, it, vi } from 'vitest'
-import { latestAssignment } from '../src/core/index.ts'
+import { existsSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { latestAssignment, type Ticket } from '../src/core/index.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
@@ -31,6 +33,60 @@ it('starts a worker in its ticket directory without running the prepare command'
   expect(existsSync(ticket.execution!.directory)).toBe(true)
   expect(h.agents.has(`worker-${ticket.id}`)).toBe(true)
   expect(h.subprocess.spawn).not.toHaveBeenCalled()
+})
+
+describe('repository Workspaces', () => {
+  /** dsh-yawn's sandbox manager: one anchor directory per repository URL. */
+  const sandboxManager = (fail = false) => ({ createRepositoryWorkspace: vi.fn(async (url: string) => {
+    if (fail) throw new Error('repository workspaces require the dsh Web profile')
+    const anchor = join(tmpdir(), `anchor-${url.replace(/\W+/g, '-')}`)
+    mkdirSync(anchor, { recursive: true })
+    return anchor
+  }) })
+  const accept = async (host: Host, id: string, fields: Record<string, unknown> = {}) => {
+    const trigger = feishu(id, '@bot 修一下回归')
+    host.runtime.receive(trigger)
+    await host.runtime.idle()
+    await host.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${id}`, acknowledgement: '收到。', ...fields })
+    await host.runtime.idle()
+    return host.runtime.store.tickets.list().find(ticket => ticket.origin.triggerId === trigger.id)!
+  }
+  const variable = (host: Host, ticket: Ticket, key: string) => host.runtime.ticketEnvironment(ticket).find(item => item.key === key)?.value
+
+  it('starts each new worker in the Workspace of its ticket\'s repository, which the tickets of that repository share', async () => {
+    const manager = sandboxManager()
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'],
+      services: { sandboxManager: manager }, repositories: ['other/tools'] })
+    const tools = await accept(h, '1', { repository: 'Other/Tools' })
+    const primary = await accept(h, '2')
+    const again = await accept(h, '3', { repository: 'other/tools' })
+    expect(manager.createRepositoryWorkspace.mock.calls).toEqual([['https://github.com/other/tools'], ['https://github.com/acme/widgets'], ['https://github.com/other/tools']])
+    expect(tools.execution).toMatchObject({ repository: 'other/tools', directory: join(tmpdir(), 'anchor-https-github-com-other-tools') })
+    expect(again.execution!.directory).toBe(tools.execution!.directory)
+    expect(primary.execution).toMatchObject({ repository: 'acme/widgets', directory: join(tmpdir(), 'anchor-https-github-com-acme-widgets') })
+    const workspaces = h.controller.create.mock.calls.map(([request]) => request as { sessionId: string; workspaceId?: string })
+    expect(workspaces.find(request => request.sessionId === `worker-${tools.id}`)?.workspaceId).toBe(tools.execution!.directory)
+    expect(variable(h, tools, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('other/tools')
+    expect(variable(h, primary, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('acme/widgets')
+    await expect(accept(h, '4', { repository: 'someone/else' })).rejects.toThrow('someone/else is not a repository of the GitHub Source')
+  })
+  it('keeps the ticket\'s own directory when repository Workspaces are off or dsh-yawn offers none, and fails a launch whose Workspace it cannot create', async () => {
+    const manager = sandboxManager()
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true }, without: ['permissionPresets'], services: { sandboxManager: manager }, repositories: ['other/tools'] })
+    const off = await accept(h, '1', { repository: 'other/tools' })
+    expect(off.execution).toMatchObject({ repository: 'other/tools', directory: expect.stringMatching(/\/work\/fix-1-/) })
+    expect(manager.createRepositoryWorkspace).not.toHaveBeenCalled()
+    await h.stop()
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'] })
+    expect((await accept(h, '1')).execution!.directory).toMatch(/\/work\/fix-1-/)
+    await h.stop()
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'], services: { sandboxManager: sandboxManager(true) } })
+    const failed = await accept(h, '1')
+    await h.runtime.idle()
+    expect(h.runtime.store.tickets.get(failed.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed',
+      summary: expect.stringContaining('The dsh-yawn Workspace of https://github.com/acme/widgets could not be created: repository workspaces require the dsh Web profile') }) })
+    expect(h.agents.has(`worker-${failed.id}`)).toBe(false)
+  })
 })
 
 it('refuses to start Sessions without DSH\'s permission presets when workers run on this host', async () => {

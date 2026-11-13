@@ -27,6 +27,8 @@ export const Config = s.object({
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
   remoteWorkers: s.boolean().default(false).description('Sessions run their tools in remote sandboxes, such as under dsh-yawn: setup checks run on this host, the prepare command does not run, '
     + 'and the process environment is left unchanged, so worker shells use the sandbox\'s own gh and git.'),
+  repositoryWorkspaces: s.boolean().default(false).description('With remoteWorkers under dsh-yawn: each new ticket\'s worker starts in the dsh-yawn repository Workspace of the ticket\'s repository, '
+    + 'so its sandbox clones that repository and receives that Workspace\'s secrets.'),
   managed: s.any().description('Settings and team prompt sections this configuration manages; applied at every start like a panel save. See docs/006-deployment.md.'),
   authenticatedPanel: s.boolean().default(false).description('Serve the management API on a non-loopback Web server, admitting only requests DSH\'s browser sign-in authenticates.'),
 })
@@ -37,6 +39,7 @@ export interface Machine {
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
   remoteWorkers: boolean
+  repositoryWorkspaces: boolean
   authenticatedPanel: boolean
   managed?: Managed
 }
@@ -50,10 +53,10 @@ const MOVED: Record<string, string> = {
 export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
-  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel } = config
+  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, repositoryWorkspaces, authenticatedPanel } = config
   const managed = config.managed === undefined || config.managed === null ? undefined : ManagedSchema.safeParse(config.managed)
   if (managed && !managed.success) throw new Error(`dsh-superagent configuration has an invalid managed block: ${managed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`)
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel, ...managed ? { managed: managed.data } : {} }
+  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, repositoryWorkspaces, authenticatedPanel, ...managed ? { managed: managed.data } : {} }
 }
 
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/

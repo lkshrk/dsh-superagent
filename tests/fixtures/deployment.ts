@@ -9,7 +9,7 @@ export const reference = <T>(value: T): Volatile<T> & { set(next: T): void } => 
 }
 export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
   stateDir: '/tmp/dsh-superagent-test', promptMaxChars: reference(100000), admissionContextMaxPages: reference(10),
-  admissionContextTimeoutMs: reference(15000), remoteWorkers: false, authenticatedPanel: false, ...overrides,
+  admissionContextTimeoutMs: reference(15000), remoteWorkers: false, repositoryWorkspaces: false, authenticatedPanel: false, ...overrides,
 })
 export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => ({
   ...testMachine(), repository: 'acme/widgets', repositories: [overrides.repository ?? 'acme/widgets'],

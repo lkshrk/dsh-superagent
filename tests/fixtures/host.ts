@@ -132,9 +132,12 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
   return { service, settle, spawn, live: (id: string) => !!children.get(id)?.live }
 }
 
-/** `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH services; `globalTools` are the tools every agent inherits. */
+/**
+ * `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH
+ * services and `services` adds more; `globalTools` are the tools every agent inherits; `repositories` are the GitHub Source's additional ones.
+ */
 export async function startRuntime(seed?: (store: Store) => void,
-  options: { machine?: Partial<Machine>; without?: readonly string[]; globalTools?: readonly string[] } = {}) {
+  options: { machine?: Partial<Machine>; without?: readonly string[]; services?: Record<string, unknown>; globalTools?: readonly string[]; repositories?: readonly string[] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -146,6 +149,7 @@ export async function startRuntime(seed?: (store: Store) => void,
   const answers: Record<string, string> = {
     [`${AGENT} api user`]: '{"login":"agent-bot","id":7}',
     [`${AGENT} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`]: '{"name":"acme/widgets","push":true}\n',
+    ...Object.fromEntries((options.repositories ?? []).map(name => [`${AGENT} api repos/${name} --jq {name: .full_name, push: .permissions.push}`, `{"name":"${name}","push":true}\n`])),
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
@@ -246,7 +250,7 @@ export async function startRuntime(seed?: (store: Store) => void,
     sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
-  for (const [name, service] of Object.entries(services)) if (!options.without?.includes(name)) ctx.reflect.provide(name, service)
+  for (const [name, service] of Object.entries({ ...services, ...options.services })) if (!options.without?.includes(name)) ctx.reflect.provide(name, service)
   // The CLIs answer as the faked subprocess service does, for setup checks that run them on this host.
   for (const cli of [AGENT, BOT]) {
     const cases = Object.entries(answers).filter(([command]) => command.startsWith(`${cli} `))
@@ -254,7 +258,7 @@ export async function startRuntime(seed?: (store: Store) => void,
     writeFileSync(cli, ['#!/bin/sh', 'case "$*" in', ...cases, 'esac', ''].join('\n'), { mode: 0o755 })
   }
   const seeded = new Store(join(directory, 'orchestrator.sqlite'))
-  const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
+  const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT, repositories: (options.repositories ?? []).map(repository => ({ repository })) } }, feishu: { enabled: true, config: { cli: BOT } } }
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()

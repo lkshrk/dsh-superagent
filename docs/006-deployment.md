@@ -107,7 +107,7 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 | `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades. One dsh-superagent runs per state directory; a start waits up to 45 seconds for the lock of a process that was killed to go stale |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
 | `managed` | no | Settings and team prompt sections this configuration manages, see [Managed settings](#managed-settings) |
-| `remoteWorkers`, `authenticatedPanel` | no | Off by default; for a host whose Sessions run their tools in remote sandboxes, see [Running under dsh-yawn](#running-under-dsh-yawn) |
+| `remoteWorkers`, `repositoryWorkspaces`, `authenticatedPanel` | no | Off by default; for a host whose Sessions run their tools in remote sandboxes, see [Running under dsh-yawn](#running-under-dsh-yawn) |
 
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
 
@@ -281,7 +281,7 @@ A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write s
 
 ## Running under dsh-yawn
 
-[dsh-yawn](https://github.com/zhming0/dsh-yawn) runs DeepSeek Harness as one shared control plane whose Sessions run their file and shell tools in a sandbox per Session. Two flags adapt dsh-superagent to it; with both off it runs as described above.
+[dsh-yawn](https://github.com/zhming0/dsh-yawn) runs DeepSeek Harness as one shared control plane whose Sessions run their file and shell tools in a sandbox per Session. Three flags adapt dsh-superagent to it; with both off it runs as described above.
 
 Install a pinned commit into the control plane's `web` profile:
 
@@ -298,6 +298,7 @@ Configure the entry in the profile's `cordis.patch.yml`:
   config:
     stateDir: /data/.dsh-superagent
     remoteWorkers: true
+    repositoryWorkspaces: true
     authenticatedPanel: true
 ```
 
@@ -309,6 +310,13 @@ Configure the entry in the profile's `cordis.patch.yml`:
 - Sessions start without DeepSeek Harness's permission presets, which dsh-yawn disables; its sandboxes always run with full access.
 - dsh-superagent Sessions refuse every tool outside their own and the work tools, including tools dsh-yawn adds to each Session such as `create_session`. Workers and their subagents may also use the `searxng` and `context7` MCP servers' tools; a subagent dsh-superagent cannot trace to a live ticket gets no tools. The main Session cannot save settings or prompts; use the panel.
 
+`repositoryWorkspaces: true`, with `remoteWorkers`:
+
+- Each Ticket works in one GitHub repository: the one its origin Trigger came from, else the one the main Session names when it accepts a request from elsewhere, such as a chat, else the primary. Every Ticket accepted from now on records it; `DSH_SUPERAGENT_GITHUB_REPOSITORY` gives it.
+- A new worker Session starts in the dsh-yawn repository Workspace of `https://github.com/<owner>/<name>`, which dsh-superagent registers through the sandbox manager when needed. dsh-yawn clones that repository into the Session's sandbox and gives it that Workspace's secrets, such as a `GITHUB_TOKEN` scoped to it. Register those secrets under the same URL, without `.git`.
+- Every Ticket of a repository shares its Workspace's directory as `DSH_SUPERAGENT_DIR`; each Session still has its own sandbox. A Session created before keeps its directory and sandbox.
+- A Workspace dsh-yawn cannot create fails the launch, as a failed prepare command does. Without dsh-yawn's sandbox manager, Tickets keep their own directories.
+
 `authenticatedPanel: true`:
 
 - The Web server may bind a non-loopback address, such as the pod IP.
@@ -316,7 +324,7 @@ Configure the entry in the profile's `cordis.patch.yml`:
 
 On the dsh-yawn side:
 
-- **Sandbox repository.** dsh-superagent's Session directories are under `stateDir`, not dsh-yawn repository Workspaces, so dsh-yawn clones the sandbox manager's `repository` setting into their sandboxes. Set it to the HTTPS URL of the GitHub Source's repository. It applies to every Session outside a repository Workspace.
+- **Sandbox repository.** Without `repositoryWorkspaces`, dsh-superagent's Session directories are under `stateDir`, not dsh-yawn repository Workspaces, so dsh-yawn clones the sandbox manager's `repository` setting into their sandboxes. Set it to the HTTPS URL of the GitHub Source's repository. It applies to every Session outside a repository Workspace.
 - **`GITHUB_TOKEN`.** Store the agent account's token in dsh-yawn's secret store, scoped to that repository's URL. Sandboxes receive it: `gh` reads it, and git uses it through dsh-yawn's credential helper.
 - **Agent CLI.** The GitHub Source's agent CLI runs on the control plane, for setup, polling and replies. It must be an absolute path to a `gh` wrapper that signs in as the agent account, for example by exporting `GH_TOKEN` from a mounted secret file before running `gh`, since setup removes `GH_TOKEN` and `GITHUB_TOKEN` from its environment.
 

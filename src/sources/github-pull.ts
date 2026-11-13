@@ -28,8 +28,9 @@ const pullId = (thread: string): PullId | undefined => {
 export const pullsOf = (ticket: Pick<Ticket, 'follows'>, open = false): PullId[] =>
   (ticket.follows ?? []).filter(item => !open || !item.closed).flatMap(item => pullId(item.thread) ?? [])
 export const pullOf = (ticket: Pick<Ticket, 'follows'>): PullId | undefined => pullsOf(ticket, true).at(-1) ?? pullsOf(ticket).at(-1)
-/** The repository a ticket works in, as its origin Trigger names it; undefined for the primary. */
-export const ticketRepository = (_ticket: Pick<Ticket, 'execution'>, origin?: Pick<Trigger, 'meta'>): string | undefined => qualifier(origin?.meta ?? {})
+/** The repository a ticket works in: the one its execution records, else the one its origin Trigger names; undefined for the primary. */
+export const ticketRepository = (ticket: Pick<Ticket, 'execution'>, origin?: Pick<Trigger, 'meta'>): string | undefined =>
+  ticket.execution?.repository ?? qualifier(origin?.meta ?? {})
 /** The qualifier of `name` among the deployment's repositories: undefined for the primary or no name; throws for a repository not configured. */
 export function pullRepository(deployment: Pick<Deployment, 'repository' | 'repositories'>, name?: string): string | undefined {
   if (!name || sameName(name, deployment.repository)) return undefined
