@@ -270,6 +270,7 @@ export class DshExecutor implements Executor {
       retry: [5000, 300_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
+    host.effects.handle('archive', payload => this.archiveQueued(payload.ticketId))
   }
   /** A lost state lock aborts the lifetime without closing; neither may mark a ticket failed. */
   private shuttingDown(): boolean { return this.host.closing() || this.host.lifetime.aborted }
@@ -366,6 +367,27 @@ export class DshExecutor implements Executor {
   }
   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
+  /** Enqueues an `archive` effect for an ended ticket's worker Session; the effect skips a ticket that resumed meanwhile. */
+  archive(ticket: Ticket): void { this.host.effects.enqueue('archive', ticket.id, { ticketId: ticket.id }) }
+  /**
+   * Archives the worker Session of an ended ticket whose origin issue closed, stopping what it still runs; a Session that does
+   * not exist is left alone. A launch or delivery of the ticket waits for it, then restores the Session.
+   */
+  private async archiveQueued(ticketId: string): Promise<void> {
+    const ticket = this.host.store.tickets.get(ticketId)
+    if (!ticket?.issueClosed || liveTicket(ticket)) return
+    const work = this.host.context.workspaceRegistry.archiveSession(workerSessionId(ticketId) as SessionId, { stopActivity: true })
+      .catch((error: unknown) => { if (!(error instanceof Error && error.name === 'WorkspaceUnknownSessionError')) throw error })
+    this.track(ticketId, work, false)
+    await work
+  }
+  private archived(ticketId: string): boolean {
+    return this.host.context.workspaceRegistry.archivedSessionIds.includes(workerSessionId(ticketId) as SessionId)
+  }
+  /** Restores a ticket's archived worker Session before its worker runs again; one not archived is left as it is. */
+  private async unarchive(ticketId: string): Promise<void> {
+    await this.host.context.workspaceRegistry.unarchiveSession(workerSessionId(ticketId) as SessionId)
+  }
   /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
   private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
     const ticket = this.host.store.tickets.get(ticketId)
@@ -410,6 +432,7 @@ export class DshExecutor implements Executor {
         }
         const input = ticket.inputs.find(item => item.id === inputId)
         try {
+          if (this.archived(ticketId)) await this.unarchive(ticketId)
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker',
@@ -474,11 +497,11 @@ export class DshExecutor implements Executor {
     this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox))
   }
   /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
-  private track(ticketId: string, stop: Promise<void>): void {
+  private track(ticketId: string, stop: Promise<void>, report = true): void {
     const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.catch(() => {})]).then(() => {})
       .finally(() => { if (this.stopping.get(ticketId) === entry) this.stopping.delete(ticketId) })
     this.stopping.set(ticketId, entry)
-    void this.background(stop)
+    if (report) void this.background(stop)
   }
   /** Wait for a stop of the ticket's background work that runs, unless the host stops first. */
   private async stopped(ticketId: string): Promise<void> {
@@ -541,10 +564,13 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
+    if (this.archived(ticket.id)) { await this.stopped(ticket.id); await this.unarchive(ticket.id); if (!current()) return }
     const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', () => ticketLabels(this.host, ticket))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
+    if (!current()) return
+    await this.unarchive(ticket.id)
     if (!current()) return
     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
     // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.

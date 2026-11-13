@@ -58,6 +58,8 @@ export interface SourceContext {
     bindThread(id: string, thread: ThreadRef, own: boolean): void
     /** Reports that a followed Thread closed at `at`; each open ticket following it ends once no `own` Thread remains open and no resumed work is still running. */
     threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void
+    /** Reports that the issue a ticket started on closed at `at`; once the ticket has ended, its worker Session is archived. */
+    issueClosed(id: string, at: string): void
   }
   triggers: { get(id: string): Trigger | undefined; /** The newest Trigger on a Thread. */ latest(thread: string): Trigger | undefined }
   notify(message: OutboundMessage): void

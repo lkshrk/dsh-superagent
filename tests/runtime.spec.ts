@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
-import { jobRegistry } from './fixtures/host.ts'
+import { jobRegistry, workspaceRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
@@ -203,7 +203,7 @@ beforeEach(async () => {
     inspect: vi.fn(async () => ({ events: [] })),
   }
   jobs = jobRegistry()
-  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
+  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: workspaceRegistry(agents), permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
@@ -403,6 +403,44 @@ it('stops a ticket on a person\'s instruction for good, and resumes an ended one
   expect(resumed.ended).toBeUndefined()
   expect(resumed.assignments).toHaveLength(2)
   expect(resumed.inputs.map(input => input.kind)).toContain('resumed')
+})
+
+it('archives an ended ticket\'s worker Session once its issue closed, and restores it before the ticket resumes', async () => {
+  const registry = services.workspaceRegistry as ReturnType<typeof workspaceRegistry>
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'fixed' })
+  await runtime.idle()
+  expect(registry.archiveSession).not.toHaveBeenCalled()
+  runtime.engine.issueClosed(ticket.id, new Date().toISOString())
+  await runtime.idle()
+  expect(registry.archiveSession).toHaveBeenCalledExactlyOnceWith(sessionId, { stopActivity: true })
+  expect(registry.archivedSessionIds).toEqual([sessionId])
+  // A person's message on its thread resumes it: the Session is restored before the worker runs again.
+  deliveries.mockClear()
+  await receive(feishu('9', '还有一个问题', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' }))
+  await runtime.pump(); await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
+  expect(registry.unarchiveSession).toHaveBeenCalledWith(sessionId)
+  expect(registry.archivedSessionIds).toEqual([])
+  expect(deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(true)
+  // It ends again under the closed issue, and is archived again; the main Session never is.
+  await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'fixed again' })
+  await runtime.idle()
+  expect(registry.archivedSessionIds).toEqual([sessionId])
+  expect(registry.archiveSession.mock.calls.map(([id]) => id)).not.toContain(runtime.masterId)
+})
+
+it('leaves a worker Session that no longer exists alone when its ticket\'s issue closes', async () => {
+  const registry = services.workspaceRegistry as ReturnType<typeof workspaceRegistry>
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'dropped', summary: 'not reproduced' })
+  agents.delete(sessionId)
+  runtime.engine.issueClosed(ticket.id, new Date().toISOString())
+  await runtime.idle()
+  expect(registry.archiveSession).toHaveBeenCalledOnce()
+  expect(registry.archivedSessionIds).toEqual([])
+  expect(runtime.effects.pending('archive')).toBe(false)
+  expect(runtime.health.archive?.state).not.toBe('error')
 })
 
 it('tells live workers about policy changes instead of revoking them and restarts in-flight assessments', async () => {

@@ -69,6 +69,8 @@ export interface Executor {
   deliver(ticket: Ticket, assignment: Assignment): void
   /** End an assignment's work, such as cancelling its Session's turn; called after the ticket or assignment has already ended in the domain. */
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
+  /** Archive the worker Session of an ended ticket whose origin issue closed; a later launch of the ticket restores it. */
+  archive(ticket: Ticket): void
 }
 
 /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */

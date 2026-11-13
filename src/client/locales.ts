@@ -40,6 +40,7 @@ const TEXT = {
   'health.assessment': ['发给主 Session 的评估', 'Evals sent to the main Session'],
   'health.launch': ['派工启动', 'Assignment launches'],
   'health.delivery': ['输入送达', 'Input delivery to Assignments'],
+  'health.archive': ['归档 worker Session', 'Archiving worker Sessions'],
   'health.relay': ['转达给主 Session 的消息', 'Relays to the main Session'],
   'health.notice': ['给主 Session 的通知', 'Notices to the main Session'],
   'health.reply': ['发往渠道的消息', 'Messages to Channels'],

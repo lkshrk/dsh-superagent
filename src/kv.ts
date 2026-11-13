@@ -45,13 +45,15 @@ export const KV = {
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision (`revision`
-   * counts reported CI changes so each produces a distinct Trigger ID). Names in an additional repository are qualified as `owner/name#…`.
+   * counts reported CI changes so each produces a distinct Trigger ID); and when each Issue that tickets started on, and that
+   * is not known to be closed, was last read for its state. Names in an additional repository are qualified as `owner/name#…`.
    */
   github: { since: perRepository<string>('github-since'), retries: record<Record<string, Retry>>('github-retry'),
     cursor: family<string, [id: string | number]>('github-cursor:'),
     stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
     branchCi: perRepository<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
-    ci: family<{ fingerprint: string; revision: number }, [id: string | number]>('github-ci:') },
+    ci: family<{ fingerprint: string; revision: number }, [id: string | number]>('github-ci:'),
+    issueChecks: record<Record<string, string>>('github-issue-checks') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.

@@ -24,6 +24,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
   const delivered: [string, string][] = []
   const executor: Executor = {
     start: vi.fn((ticket, assignment) => { launches.push([ticket, assignment]) }), deliver: vi.fn(ticket => { deliveries.add(ticket.id) }), stop: vi.fn(),
+    archive: vi.fn(),
   }
   let version = 'v1', paused = false
   const policy: Policy = {
@@ -1617,5 +1618,49 @@ describe('ignores from the card', () => {
     // Accepting an inferred candidate still takes an assessment's matched rules.
     h.engine.receive(trigger('5', { actor: guest })); h.engine.reevaluate('5'); h.pump()
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
+  })
+})
+describe('origin issue closed', () => {
+  const archived = (h: ReturnType<typeof harness>) => vi.mocked(h.executor.archive).mock.calls.map(([ticket]) => ticket.id)
+  it('archives an ended ticket\'s worker Session once its issue closed, and only once', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+    expect(archived(h)).toEqual([])
+    h.engine.issueClosed(ticketId, '2026-09-23T00:05:00Z')
+    h.engine.issueClosed(ticketId, '2026-09-23T00:06:00Z')
+    expect(archived(h)).toEqual([ticketId])
+    expect(h.repo.tickets.get(ticketId)!.issueClosed).toBe('2026-09-23T00:05:00.000Z')
+  })
+  it('archives a ticket whose issue closed while its worker still ran once it ends', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.issueClosed(ticketId, '2026-09-23T00:05:00Z')
+    expect(archived(h)).toEqual([])
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+    expect(archived(h)).toEqual([ticketId])
+  })
+  it('archives nothing when a ticket is stopped or its pull request merged while its issue stays open', () => {
+    const h = harness()
+    const stopped = accepted(h).ticketId!
+    h.engine.stopTicket(stopped)
+    const merged = accepted(h, '5', 't2').ticketId!
+    h.engine.bindThread(merged, { source: 'gh', id: 'pr-9' }, true)
+    h.engine.report(merged, { state: 'ready', summary: 'PR ready' })
+    h.engine.threadClosed({ source: 'gh', id: 'pr-9' }, 'merged', '2026-09-23T00:00:30Z')
+    expect(h.repo.tickets.get(merged)!.ended).toMatchObject({ outcome: 'merged' })
+    expect(archived(h)).toEqual([])
+  })
+  it('archives a resumed ticket again when it ends again, and ignores an unknown ticket', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+    h.engine.issueClosed(ticketId, '2026-09-23T00:05:00Z')
+    h.engine.receive(trigger('2', { actor: guest })); h.pump()
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    h.engine.report(ticketId, { state: 'ready', summary: 'done again' })
+    expect(archived(h)).toEqual([ticketId, ticketId])
+    expect(() => { h.engine.issueClosed('missing', '2026-09-23T00:05:00Z') }).not.toThrow()
   })
 })

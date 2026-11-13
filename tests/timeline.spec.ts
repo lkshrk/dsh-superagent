@@ -22,7 +22,7 @@ const sources = new SourceRegistry(() => SettingsSchema.parse({}))
 sources.register(githubKind)
 const host = () => ({ store, sources, links: (channel: ChannelRef) => githubLink(channel.address, {}) })
 const engine = () => new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(SettingsSchema.parse({}), sources),
-  assessor: { request: () => {} }, executor: { start: async () => {}, deliver: async () => {}, stop: async () => {} },
+  assessor: { request: () => {} }, executor: { start: async () => {}, deliver: async () => {}, stop: async () => {}, archive: () => {} },
   outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
 const comment = (id: string, at: string): Trigger => ({ id, source: 'github', threads: [{ source: 'github', id: '7' }], actor: { source: 'github', id: 'alice' },
   human: true, at, text: `comment ${id}`, meta: {} })

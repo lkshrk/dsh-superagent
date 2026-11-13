@@ -86,6 +86,20 @@ export function jobRegistry(owner: (sessionId: string) => FakeAgent | undefined 
     run: (owner: string, label?: string) => { const id = `bash-${jobs.size + 1}`; jobs.set(id, { id, owner, status: 'running', label }); return id } }
 }
 
+/** A Workspace registry over the fake agents: it archives a Session it knows and restores any, as DSH's does. */
+export function workspaceRegistry(agents: Map<string, unknown>) {
+  const archived: string[] = []
+  return {
+    create: async (cwd: string) => ({ id: cwd }),
+    get archivedSessionIds() { return archived },
+    archiveSession: vi.fn(async (id: string, _options?: { stopActivity?: boolean }) => {
+      if (archived.includes(id)) return
+      if (!agents.has(id)) throw Object.assign(new Error(`cannot archive session '${id}'`), { name: 'WorkspaceUnknownSessionError' })
+      archived.push(id)
+    }),
+    unarchiveSession: vi.fn(async (id: string) => { if (archived.includes(id)) archived.splice(archived.indexOf(id), 1) }),
+  }
+}
 /**
  * DSH's subagents as the Executor uses them. `spawn` starts a child of a Session, an agent while it lives, which a drain of
  * the Session's descendants refuses from then on; `settle` ends one, whose end wakes its idle parent or steers a running one
@@ -246,7 +260,7 @@ export async function startRuntime(seed?: (store: Store) => void,
   const jobs = jobRegistry(id => agents.get(id))
   const subagents = subagentRuntime(agents)
   const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value) }, sessionController: controller,
-    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
+    sessionPersistence: persistence, workspaceRegistry: workspaceRegistry(agents), permissionPresets: { set: () => {} }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries({ ...services, ...options.services })) if (!options.without?.includes(name)) ctx.reflect.provide(name, service)
@@ -306,7 +320,7 @@ export async function startRuntime(seed?: (store: Store) => void,
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
+  return { runtime, ctx, directory, agents, registry: services.workspaceRegistry, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
     jobs, subagents, step, claim }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

@@ -8,7 +8,7 @@ import { runFeishu } from '../src/sources/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, localId, pullTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
-import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
+import { apply as applyGithub, githubKind, ISSUE_CHECK_MS, pollFailure, pollIssueCloses, pollRound } from '../src/sources/github.ts'
 import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
@@ -33,7 +33,7 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
   const deployment = testDeployment()
   sources.register(feishuKind); sources.register(githubKind)
   const assessor: Assessor = { request: vi.fn(async () => {}) }
-  const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) }
+  const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), archive: vi.fn() }
   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
   const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources), assessor, executor, outbox })
   const commands = new Commands(() => deployment, {}, new AbortController().signal)
@@ -555,6 +555,42 @@ describe('github source', () => {
     await pollGithubThreads(h)
     expect(h.receive).toHaveBeenCalledTimes(1)
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ actor: { id: 'carol' }, text: 'APPROVED review of commit abc123', meta: { kind: 'review' } })
+    h.store.close()
+  })
+  it('reads the Issue a ticket started on every few minutes until it closes, and never a PR\'s', async () => {
+    const h = host()
+    const opened = (number: number) => ({ number, title: 'Login fails', body: '', user: { login: 'alice', type: 'User' },
+      created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/acme/widgets/issues/${number}` })
+    const started = (id: string, origin: Trigger, ended: boolean) => {
+      h.store.triggers.save(origin)
+      h.store.tickets.save({ ...openTicket(id), origin: { triggerId: origin.id, triggerIds: [origin.id] },
+        ...ended ? { ended: { at: '2026-09-09T00:00:00Z', by: 'executor' as const, outcome: 'merged' as const } } : {} })
+      const ref = origin.threads[0]!
+      h.store.threads.save({ key: `github:${ref.id}`, ref, createdAt: '', lastAt: new Date().toISOString(), subscriptions: [id], correlated: [],
+        pending: [], meta: { number: Number(ref.id), isPr: origin.meta.isPr, title: 'Login fails' } })
+    }
+    started('t5', issueTrigger(opened(5), 'agent-bot'), true)
+    started('t6', pullTrigger(opened(6), 'agent-bot'), true)
+    started('t7', issueTrigger(opened(7), 'agent-bot'), false)
+    const routes: Record<string, unknown> = { 'issues/5': { state: 'open' }, 'issues/7': refused(502, 'Bad Gateway') }
+    const reads = github(h, routes)
+    await pollIssueCloses(h)
+    await pollIssueCloses(h)
+    expect(bare(reads)).toEqual(['issues/5', 'issues/7'])
+    expect(h.store.tickets.get('t5')).not.toHaveProperty('issueClosed')
+    // A failed read of one Issue does not keep the others from being read.
+    routes['issues/5'] = { state: 'closed', closed_at: '2026-09-10T00:00:00Z' }
+    const past = new Date(Date.now() - ISSUE_CHECK_MS).toISOString()
+    h.store.set(KV.github.issueChecks, { 5: past, 7: past })
+    await pollIssueCloses(h)
+    expect(h.store.tickets.get('t5')!.issueClosed).toBe('2026-09-10T00:00:00.000Z')
+    expect(vi.mocked(h.executor.archive).mock.calls.map(([ticket]) => ticket.id)).toEqual(['t5'])
+    // A closed Issue is read no more, and the PR's ticket is never read for an Issue.
+    h.store.set(KV.github.issueChecks, { 7: past })
+    reads.length = 0
+    await pollIssueCloses(h)
+    expect(bare(reads)).toEqual(['issues/7'])
+    expect(h.store.tickets.get('t6')).not.toHaveProperty('issueClosed')
     h.store.close()
   })
   it('reads each PR once per round and takes its end, auto-merge and CI from that read', async () => {
@@ -1178,7 +1214,7 @@ describe('feishu event consumer', () => {
     const sources = new SourceRegistry(() => store.settings(), board)
     sources.register(feishuKind)
     const assessor: Assessor = { request: vi.fn(async () => {}) }
-    const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) }
+    const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), archive: vi.fn() }
     const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
     const policy = () => settingsPolicy(store.settings(), sources)
     const engine = new Engine({ repo: store, scope: sources, policy, assessor, executor, outbox })

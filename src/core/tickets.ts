@@ -88,6 +88,14 @@ export class Tickets extends EnginePart {
       this.end(ticket.id, 'executor', done.outcome, resumed ? this.now() : done.at)
     }
   }
+  /** Record that the issue a ticket started on closed; an ended ticket's worker Session is archived now, an open one's when it ends. */
+  issueClosed(ticketId: string, at: string): void {
+    const ticket = this.repo.tickets.get(ticketId)
+    if (!ticket || ticket.issueClosed) return
+    ticket.issueClosed = at
+    this.repo.tickets.save(ticket)
+    if (!liveTicket(ticket)) this.options.executor.archive(ticket)
+  }
   /**
    * How a ticket that follows Threads is done with them: once no Thread it opened (`own`) is still open, or, when it opened none,
    * once every one it follows closed. It ends as the latest close among those Threads did; undefined while it is not done.
@@ -360,6 +368,7 @@ export class Tickets extends EnginePart {
     this.letGo(ticketId, waiting, left)
     this.emit('ticket.ended', { ticketId, by, outcome, ...why })
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
+    if (ticket.issueClosed) this.options.executor.archive(ticket)
   }
   /**
    * Whether a ticket's work has not finished at a close at `at`: its worker took up a person's message the ticket decides and

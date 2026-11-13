@@ -305,6 +305,8 @@ export interface Ticket {
   execution?: Execution
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
+  /** When the issue it started on closed, as its Source reported: once it has also ended, its worker Session is archived. */
+  issueClosed?: string
 }
 /**
  * A Thread a ticket follows, by its key: `own` when the ticket opened it, such as its own pull request, and when and how it

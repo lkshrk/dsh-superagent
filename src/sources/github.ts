@@ -13,7 +13,7 @@ import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
 import { KV, type Family } from '../kv.ts'
-import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
+import { cursorAt, pause, polled, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { z } from 'zod'
 
@@ -364,6 +364,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   }
   await pollTicketPulls(ctx, signal, round)
   await pollThreads(ctx, signal, round)
+  await pollIssueCloses(ctx, signal, round)
   // An unverified additional repository reports at once, while the other repositories go on being polled.
   const unreadable = [...round.unreadable.values()]
   if (unreadable.length && !signal?.aborted) ctx.report('github', { state: 'error', detail: `Repositories left out: ${unreadable.join('; ')}`, at: round.started })
@@ -546,6 +547,38 @@ function nameThread(ctx: SourceContext, target: Target, title: string): void {
   ctx.threads.patch(`github:${idOf(target)}`, { title })
   ctx.threads.describe(`github:${idOf(target)}`, { label: `${name} ${title}`, facts: { number: { value: name } } })
 }
+/** How often the state of an Issue a ticket started on is read, until it is closed. */
+export const ISSUE_CHECK_MS = 5 * 60_000
+/**
+ * Reads, at most every `ISSUE_CHECK_MS`, the state of each Issue (not PR) that a ticket started on and that is not known to
+ * be closed, while its Thread is still polled, and reports a closed one for those tickets, whose worker Sessions are then archived.
+ */
+export async function pollIssueCloses(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
+  const checked = ctx.state.get(KV.github.issueChecks) ?? {}
+  const next: Record<string, string> = {}
+  for (const thread of ctx.threads.subscribed(SOURCE)) {
+    if (stopped(ctx, round)) return
+    if (thread.meta.isPr === true || !polled(ctx, thread)) continue
+    const { repository, local } = parseLocal(thread.ref.id)
+    const number = Number(local)
+    if (!number || (repository && !configured(ctx.deployment, repository)) || !usable(round, repository)) continue
+    const waiting = thread.subscriptions.filter(id => {
+      const ticket = ctx.tickets.get(id)
+      const origin = ticket && !ticket.issueClosed ? ctx.triggers.get(ticket.origin.triggerId) : undefined
+      return origin?.source === SOURCE && origin.meta.isPr === false && origin.threads.some(ref => ref.source === SOURCE && ref.id === thread.ref.id)
+    })
+    if (!waiting.length) continue
+    const last = checked[thread.ref.id]
+    if (last && Date.parse(round.started) - Date.parse(last) < ISSUE_CHECK_MS) { next[thread.ref.id] = last; continue }
+    next[thread.ref.id] = round.started
+    try {
+      const issue = await scoped(ctx, round, repository).api(IssueStateSchema, `issues/${number}`)
+      if (issue.state === 'closed') for (const id of waiting) ctx.tickets.issueClosed(id, issue.closed_at ?? round.started)
+    } catch (error) { if (!stopped(ctx, round)) failed(ctx, round, thread.ref.id, error) }
+  }
+  ctx.state.set(KV.github.issueChecks, Object.keys(next).length ? next : undefined)
+}
+const IssueStateSchema = z.looseObject({ state: z.string(), closed_at: z.string().nullish() })
 /** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue is still polled within the horizon (costing one read) and does not fail the round. */
 export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
   await pollEach(ctx, SOURCE, () => stopped(ctx, round), async thread => {

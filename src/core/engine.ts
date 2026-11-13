@@ -64,6 +64,14 @@ export class Engine {
     this.repo.atomic(() => { this.tickets.threadClosed(thread, outcome, isoTime(at)) })
   }
 
+  /**
+   * A Source's fact that the issue a ticket started on closed, at the time it happened: the ticket's worker Session is archived
+   * once the ticket has ended, at once when it already has. Only the first report counts; an unknown ticket is ignored.
+   */
+  issueClosed(ticketId: string, at: string): void {
+    this.repo.atomic(() => { this.tickets.issueClosed(ticketId, isoTime(at)) })
+  }
+
   // The clock
 
   /**
@@ -258,7 +266,7 @@ export class Engine {
 }
 
 /** What Sources ask and tell the Engine. */
-export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
+export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed' | 'issueClosed'>
 /** What the main Session asks of the Engine. */
 export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
 /** What people ask of the Engine, through the panel or the main Session. */
