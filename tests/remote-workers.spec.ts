@@ -365,4 +365,27 @@ describe('the Linear tools of a worker splitting an epic', () => {
     expect(restrict).toHaveBeenCalledTimes(2)
     expect(vi.mocked(toolsOf(`worker-${tickets.plain}`).restrict)).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps the previous mask when a rebuild fails, and rebuilds again on a later change', async () => {
+    const tools = [...UNLINKED]
+    await start(tools)
+    const worker = `worker-${tickets.split}`
+    const agentCtx = (h!.agents.get(worker) as unknown as { ctx: { emit: (event: 'tools/change') => void } }).ctx
+    const restrict = vi.mocked(toolsOf(worker).restrict)
+    const first = vi.fn()
+    restrict.mockReset()
+    tools.push('mcp__linear__get_issue')
+    restrict.mockImplementationOnce(() => { throw new Error('unknown global tool') })
+    expect(() => { agentCtx.emit('tools/change') }).not.toThrow()
+    expect(restrict).toHaveBeenCalledTimes(1)
+    // DSH emits tools/change from inside restrict and dispose; a nested change neither recurses nor rebuilds twice.
+    restrict.mockImplementation(() => { agentCtx.emit('tools/change'); return first })
+    agentCtx.emit('tools/change')
+    expect(restrict).toHaveBeenCalledTimes(2)
+    expect(restrict.mock.calls.at(-1)![0].allow).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', 'mcp__linear__get_issue'])
+    tools.push('mcp__linear__save_issue')
+    agentCtx.emit('tools/change')
+    expect(restrict).toHaveBeenCalledTimes(3)
+    expect(first).toHaveBeenCalledTimes(1)
+  })
 })

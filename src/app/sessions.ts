@@ -332,18 +332,23 @@ export class Sessions {
     const ticket = store.tickets.get(ticketId)
     const epic = remote && ticket ? splitEpic(sourceTrigger(this.host, ticket)) : undefined
     const mcp = (name: string): boolean => workerMcp(name) || epic !== undefined && SPLIT_LINEAR_TOOLS.includes(name)
-    let mask: { allow: string, dispose: () => void } | undefined
+    let mask: { key: string, dispose: () => void } | undefined, building = false
     // An MCP server may register its tools after this Session started, so the mask follows the registry.
     const restrict = () => {
       const allow = [...WORK_TOOLS.filter(name => tools.get(name, parent)), ...remote ? tools.schemas(parent).map(tool => tool.name).filter(mcp) : []]
-      if (mask?.allow === allow.join('\n')) return
+      const key = allow.join('\n')
+      if (building || mask?.key === key) return
       const previous = mask
-      mask = { allow: allow.join('\n'), dispose: () => {} }
-      mask.dispose = tools.restrict({ allow })
+      building = true
+      try { mask = { key, dispose: tools.restrict({ allow }) } } finally { building = false }
       previous?.dispose()
     }
     restrict()
-    return [() => mask?.dispose(), agent.ctx.on('tools/change', restrict), tools.guard(() => {
+    // Runs inside whoever emitted the event, so a failed rebuild keeps the previous mask instead of throwing there.
+    const rebuild = () => {
+      try { restrict() } catch (error) { this.ctx.logger.warn('dsh-superagent could not update a Session\'s tools: %s', String(error)) }
+    }
+    return [() => mask?.dispose(), agent.ctx.on('tools/change', rebuild), tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
