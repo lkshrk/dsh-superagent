@@ -6,8 +6,8 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
-import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { key, liveTicket, type Ticket, type Trigger } from '../core/index.ts'
+import { mandateInstructions, sourceTrigger, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -24,7 +24,7 @@ import type { RegisterTool, Tool } from './tools/tool.ts'
 export interface SessionsHost {
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
-  readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'settings' | 'get' | 'set' | 'keys'>
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'compose' | 'skills'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'idle' | 'pending'>
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
@@ -68,6 +68,25 @@ const PANEL_ONLY_TOOLS = ['orchestrator_settings_save', 'orchestrator_prompts_sa
 /** Read-only MCP servers a worker may use with `remoteWorkers`, as tool name prefixes. */
 const WORKER_MCP_PREFIXES = ['mcp__searxng__', 'mcp__context7__']
 const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => name.startsWith(prefix))
+/** The Linear MCP tools a worker splitting a Linear epic may use; `save_issue` only creates sub-issues of its epic. */
+const SPLIT_LINEAR_TOOLS = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue']
+  .map(name => `mcp__linear__${name}`)
+/** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
+function splitEpic(trigger: Trigger | undefined): string[] | undefined {
+  if (trigger?.source !== 'linear' || trigger.meta.mode !== 'split') return undefined
+  return [trigger.meta.identifier, trigger.meta.issue].filter((value): value is string => typeof value === 'string' && value !== '')
+}
+/** Refuses a `save_issue` call that updates an issue or creates one outside `epic`. */
+function createUnder(epic: readonly string[]) {
+  const label = epic[0] ?? 'the ticket\'s epic'
+  return ({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined => {
+    if (name !== 'mcp__linear__save_issue') return undefined
+    const args = (input ?? {}) as { id?: unknown; parentId?: unknown }
+    if (args.id !== undefined) return `Only new sub-issues of ${label} may be created; updating an issue is refused`
+    const parent = typeof args.parentId === 'string' ? args.parentId.toLowerCase() : undefined
+    return parent !== undefined && epic.some(value => value.toLowerCase() === parent) ? undefined : `Only sub-issues of ${label} may be created`
+  }
+}
 /** Refuses tools outside `allowed`, including ones a host registers on each agent, which `restrict` cannot mask. */
 const onlyTools = (allowed: ReadonlySet<string>, also: (name: string) => boolean = () => false) => ({ name }: { name: string }): string | undefined =>
   allowed.has(name) || also(name) ? undefined : `${name} is not available to dsh-superagent Sessions`
@@ -302,18 +321,33 @@ export class Sessions {
    * ended. A failed or blocked worker keeps its tools, so a person may continue it in its Session; only automated input waits
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
-   * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent.
+   * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent; a ticket
+   * splitting a Linear epic also gets the split's Linear tools.
    */
   private workOnly(agent: Agent, ticketId: string, own: readonly string[] = []): (() => void)[] {
     const store = this.host.store
+    const tools = agent.ctx.tools
     const parent = scopeParentOf(agent)
     const remote = this.host.remoteWorkers === true
-    const mcp = remote ? agent.ctx.tools.schemas(parent).map(tool => tool.name).filter(workerMcp) : []
-    const allow = [...WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)), ...mcp]
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    const ticket = store.tickets.get(ticketId)
+    const epic = remote && ticket ? splitEpic(sourceTrigger(this.host, ticket)) : undefined
+    const mcp = (name: string): boolean => workerMcp(name) || epic !== undefined && SPLIT_LINEAR_TOOLS.includes(name)
+    let mask: { allow: string, dispose: () => void } | undefined
+    // An MCP server may register its tools after this Session started, so the mask follows the registry.
+    const restrict = () => {
+      const allow = [...WORK_TOOLS.filter(name => tools.get(name, parent)), ...remote ? tools.schemas(parent).map(tool => tool.name).filter(mcp) : []]
+      if (mask?.allow === allow.join('\n')) return
+      const previous = mask
+      mask = { allow: allow.join('\n'), dispose: () => {} }
+      mask.dispose = tools.restrict({ allow })
+      previous?.dispose()
+    }
+    restrict()
+    return [() => mask?.dispose(), agent.ctx.on('tools/change', restrict), tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
-    }), ...remote ? [agent.ctx.tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), workerMcp))] : []]
+    }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
+    ...epic ? [tools.guard(createUnder(epic))] : []]
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's

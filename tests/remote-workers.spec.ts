@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { latestAssignment, type Ticket } from '../src/core/index.ts'
+import { latestAssignment, type Ticket, type Trigger } from '../src/core/index.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { commentTrigger } from '../src/sources/github-trigger.ts'
@@ -284,4 +284,85 @@ it('refuses every tool of a subagent it cannot place when workers run in remote 
   await subagent('person', undefined)
   await subagent('person-child', 'person')
   expect(['person', 'person-child'].map(id => vi.mocked(toolsOf(id).guard).mock.calls.length)).toEqual([0, 0])
+})
+
+describe('the Linear tools of a worker splitting an epic', () => {
+  const EPIC = '2f1d7a0e-5b1c-4c3e-9a63-0d7b1e4f8a21'
+  const LINEAR = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment', 'delete_comment']
+    .map(name => `mcp__linear__${name}`)
+  const trigger = (id: string, source: string, meta: Record<string, unknown>) => ({ id, source, threads: [{ source, id }], actor: { source, id: 'alice' },
+    human: true, at: '2026-11-13T00:00:00Z', text: 'split it', meta }) as Trigger
+  const ticket = (id: string, origin: string, ended?: boolean) => ({ id, title: id, decisionId: `d-${id}`, channels: [], assignments: [], inputs: [], undelivered: [],
+    mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'linear', id: 'alice' }, scope: '' },
+    createdAt: '', updatedAt: '', origin: { triggerId: origin, triggerIds: [origin] },
+    ...ended ? { ended: { at: '2026-11-13T00:00:00Z', by: 'person', outcome: 'stopped' } } : {} }) as unknown as Ticket
+  const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended' }
+  const UNLINKED = GLOBAL.filter(name => !name.startsWith('mcp__linear__'))
+  async function start(globalTools: string[] = [...UNLINKED, ...LINEAR]): Promise<void> {
+    h = await startRuntime(store => {
+      store.triggers.save(trigger('t-split', 'linear', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
+      store.triggers.save(trigger('t-plain', 'linear', { issue: EPIC, identifier: 'ROU-592' }))
+      store.triggers.save(trigger('t-github', 'github', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
+      store.tickets.save(ticket(tickets.split, 't-split'))
+      store.tickets.save(ticket(tickets.plain, 't-plain'))
+      store.tickets.save(ticket(tickets.github, 't-github'))
+      store.tickets.save(ticket(tickets.ended, 't-split', true))
+    }, { globalTools, machine: { remoteWorkers: true }, without: ['permissionPresets'] })
+    for (const id of Object.values(tickets)) await subagent(`worker-${id}`, undefined)
+  }
+  const call = (sessionId: string, name: string, args: unknown = {}) =>
+    vi.mocked(toolsOf(sessionId).guard).mock.calls.map(([guard]) => guard({ name, arguments: args })).find(reason => reason !== undefined)
+  const READS = LINEAR.slice(0, 5)
+
+  it('lets a split worker and its subagents read Linear and create sub-issues of its epic only', async () => {
+    await start()
+    const worker = `worker-${tickets.split}`
+    await subagent('split-child', worker)
+    for (const id of [worker, 'split-child']) {
+      expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...LINEAR.slice(0, 6)])
+      expect(READS.map(name => call(id, name))).toEqual(READS.map(() => undefined))
+      for (const parentId of [EPIC, EPIC.toUpperCase(), 'ROU-592', 'rou-592']) {
+        expect(call(id, 'mcp__linear__save_issue', { title: 'Part', team: 'ROU', parentId })).toBeUndefined()
+      }
+      expect(call(id, 'mcp__linear__save_issue', { id: 'ROU-700', parentId: 'ROU-592', title: 'Moved' }))
+        .toBe('Only new sub-issues of ROU-592 may be created; updating an issue is refused')
+      for (const args of [{ title: 'Part', parentId: 'ROU-593' }, { title: 'Part' }, { title: 'Part', parentId: 592 }, undefined]) {
+        expect(call(id, 'mcp__linear__save_issue', args)).toBe('Only sub-issues of ROU-592 may be created')
+      }
+      expect(['mcp__linear__save_comment', 'mcp__linear__delete_comment'].map(name => call(id, name)))
+        .toEqual([denied('mcp__linear__save_comment'), denied('mcp__linear__delete_comment')])
+      expect(['mcp__searxng__web_search', 'mcp__context7__query_docs'].map(name => call(id, name))).toEqual([undefined, undefined])
+    }
+  })
+
+  it('refuses every Linear tool to other workers, their subagents, an ended ticket\'s worker and the main Session', async () => {
+    await start()
+    await subagent('plain-child', `worker-${tickets.plain}`)
+    for (const id of [`worker-${tickets.plain}`, 'plain-child', `worker-${tickets.github}`]) {
+      expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs'])
+      expect(LINEAR.map(name => call(id, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+      expect(['mcp__searxng__web_search', 'mcp__context7__query_docs'].map(name => call(id, name))).toEqual([undefined, undefined])
+    }
+    const ended = 'Ticket ended; new work needs a new authorized ticket'
+    expect([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(name => call(`worker-${tickets.ended}`, name, { parentId: 'ROU-592' })))
+      .toEqual([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(() => ended))
+    const master = h!.runtime.masterId
+    expect(allowed(master).some(name => name.startsWith('mcp__'))).toBe(false)
+    expect(LINEAR.map(name => call(master, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+  })
+
+  it('admits the Linear tools of a server that connects after the split worker started', async () => {
+    const tools = [...UNLINKED]
+    await start(tools)
+    const worker = `worker-${tickets.split}`
+    expect(allowed(worker)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs'])
+    tools.push(...LINEAR)
+    const agentCtx = (h!.agents.get(worker) as unknown as { ctx: { emit: (event: 'tools/change') => void } }).ctx
+    agentCtx.emit('tools/change')
+    const restrict = vi.mocked(toolsOf(worker).restrict)
+    expect(restrict.mock.calls.at(-1)![0].allow).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...LINEAR.slice(0, 6)])
+    agentCtx.emit('tools/change')
+    expect(restrict).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(toolsOf(`worker-${tickets.plain}`).restrict)).toHaveBeenCalledTimes(1)
+  })
 })
