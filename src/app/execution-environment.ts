@@ -1,7 +1,7 @@
 /** Execution environment variables exposed to prepare commands and documented in worker Session instructions; never contains credentials. */
 import { join } from 'node:path'
-import type { Ticket, Trigger } from '../core/index.ts'
-import type { Deployment } from '../deployment.ts'
+import type { Execution, Ticket, Trigger } from '../core/index.ts'
+import type { Deployment, Machine } from '../deployment.ts'
 import type { Settings } from '../policy.ts'
 import type { Localized, VariableSpec } from '../sources/kind.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
@@ -16,6 +16,9 @@ export const EXECUTOR_VARIABLES: readonly (VariableSpec & { ticket?: true })[] =
 export interface Variable { key: string; value: string; description: Localized; owner: string }
 
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
+/** Where a ticket's worker works: its repository's shared Workspace while repository Workspaces are on, else its own directory. */
+export const workingDirectory = (execution: Execution | undefined, machine: Pick<Machine, 'remoteWorkers' | 'repositoryWorkspaces'>): string =>
+  machine.remoteWorkers && machine.repositoryWorkspaces && execution?.workspace ? execution.workspace : execution?.directory ?? ''
 
 /** Lists all declared variables grouped by owner; `enabled` is false for Sources that are currently switched off. */
 export function declaredVariables(sources: SourceRegistry, settings?: Settings): { owner: string; enabled: boolean; variables: readonly VariableSpec[] }[] {
@@ -38,7 +41,7 @@ export function environmentOf(input: { deployment: Deployment; sources: SourceRe
 /** Combines a ticket's fixed directory, name, and origin trigger with the deployment's current settings. */
 export function ticketEnvironment(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger }) {
   const { ticket, trigger, ...rest } = input
-  const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: ticket.execution?.directory ?? '',
+  const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: workingDirectory(ticket.execution, input.deployment),
     ...ticket.execution?.repository ? { repository: ticket.execution.repository } : {} }
   return environmentOf({ ...rest, ticket: values, ...trigger ? { trigger } : {} })
 }

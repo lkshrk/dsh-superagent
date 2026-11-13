@@ -14,12 +14,13 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { STATE_LOCK_STALE_MS } from './state-lock.ts'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, reasonText, type EngineForSettings, type Execution, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
-import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { environmentOf, executionRoot, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { sameName } from '../infra/text.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
@@ -214,6 +215,7 @@ export class Runtime extends Service implements SourceHost {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
     }
+    this.settleExecutions()
     this.sessions.install()
     this.executor.install()
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
@@ -224,6 +226,26 @@ export class Runtime extends Service implements SourceHost {
     this.passes.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+  }
+  /**
+   * Tickets accepted while every ticket recorded its repository name the primary, which a rename of the primary would
+   * leave unlisted, and keep their shared Workspace as their directory; both move to the form tickets have now.
+   */
+  private settleExecutions(): void {
+    const { repository } = this.setup.deployment
+    const configured = this.store.settings().sources.github?.config.repository
+    const primary = [repository, typeof configured === 'string' ? configured : ''].filter(name => !!name)
+    const root = executionRoot(this.store.settings(), this.machine.stateDir)
+    this.store.atomic(() => {
+      for (const ticket of this.store.tickets.list()) {
+        const execution = ticket.execution as (Execution & { shared?: boolean }) | undefined
+        const named = execution?.repository && primary.some(name => sameName(name, execution.repository!))
+        if (!execution || (!named && !execution.shared)) continue
+        const { shared, repository: kept, ...rest } = execution
+        this.store.tickets.save({ ...ticket, execution: { ...rest, ...kept && !named ? { repository: kept } : {},
+          ...shared ? { workspace: execution.directory, directory: join(root, execution.name) } : {} } })
+      }
+    })
   }
   private managedHost(): ManagedHost {
     const { settings, store, prompts, sessions, sources } = this

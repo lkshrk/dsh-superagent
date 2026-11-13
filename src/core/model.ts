@@ -313,10 +313,10 @@ export interface Ticket {
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
 /**
- * What the Executor chose for a ticket; `repository` is the GitHub repository it works in, absent on tickets that predate it,
- * and `shared` marks a `directory` that is its repository's Workspace, which other tickets share.
+ * What the Executor chose for a ticket: `repository` is the additional GitHub repository it works in, absent for the
+ * primary, whichever that is now; `workspace` is that repository's shared dsh-yawn Workspace its Session started in.
  */
-export interface Execution { name: string; directory: string; assignment: string; repository?: string; shared?: boolean }
+export interface Execution { name: string; directory: string; assignment: string; repository?: string; workspace?: string }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

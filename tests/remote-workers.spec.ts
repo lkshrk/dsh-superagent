@@ -7,6 +7,8 @@ import { latestAssignment, type Ticket } from '../src/core/index.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { commentTrigger } from '../src/sources/github-trigger.ts'
+import { observePull, pullRepository, ticketRepository } from '../src/sources/github-pull.ts'
+import { workingDirectory } from '../src/app/execution-environment.ts'
 import type { Deployment } from '../src/deployment.ts'
 
 let h: Host | undefined
@@ -66,13 +68,19 @@ describe('repository Workspaces', () => {
     const primary = await accept(h, '2')
     const again = await accept(h, '3', { repository: 'other/tools' })
     expect(manager.createRepositoryWorkspace.mock.calls).toEqual([['https://github.com/other/tools'], ['https://github.com/acme/widgets'], ['https://github.com/other/tools']])
-    expect(tools.execution).toMatchObject({ repository: 'other/tools', directory: join(anchors, 'https-github-com-other-tools') })
-    expect(again.execution!.directory).toBe(tools.execution!.directory)
-    expect(primary.execution).toMatchObject({ repository: 'acme/widgets', directory: join(anchors, 'https-github-com-acme-widgets') })
+    expect(tools.execution).toMatchObject({ repository: 'other/tools', workspace: join(anchors, 'https-github-com-other-tools'), directory: expect.stringMatching(/\/work\/fix-1-/) })
+    expect(again.execution!.workspace).toBe(tools.execution!.workspace)
+    // A ticket of the primary records no repository, so it follows the primary whatever it is named.
+    expect(primary.execution).not.toHaveProperty('repository')
+    expect(primary.execution!.workspace).toBe(join(anchors, 'https-github-com-acme-widgets'))
     const workspaces = h.controller.create.mock.calls.map(([request]) => request as { sessionId: string; workspaceId?: string })
-    expect(workspaces.find(request => request.sessionId === `worker-${tools.id}`)?.workspaceId).toBe(tools.execution!.directory)
+    expect(workspaces.find(request => request.sessionId === `worker-${tools.id}`)?.workspaceId).toBe(tools.execution!.workspace)
     expect(variable(h, tools, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('other/tools')
+    expect(variable(h, tools, 'DSH_SUPERAGENT_DIR')).toBe(tools.execution!.workspace)
     expect(variable(h, primary, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('acme/widgets')
+    // Switched off, the ticket's own directory is its directory again.
+    expect(workingDirectory(tools.execution, { remoteWorkers: true, repositoryWorkspaces: false })).toBe(tools.execution!.directory)
+    expect(workingDirectory(tools.execution, { remoteWorkers: false, repositoryWorkspaces: true })).toBe(tools.execution!.directory)
     await expect(accept(h, '4', { repository: 'someone/else' })).rejects.toThrow('someone/else is not a repository of the GitHub Source')
   })
   const failure = (host: Host, ticket: Ticket) => host.runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report
@@ -130,6 +138,21 @@ describe('repository Workspaces', () => {
     expect(calls).toHaveLength(1)
     expect(h.runtime.store.tickets.list().map(ticket => ticket.assignments.at(-1)?.report)).toEqual([undefined, undefined])
   })
+  it('moves tickets that recorded the primary, or a shared Workspace as their directory, to the form tickets have now', async () => {
+    const ticket = (id: string, execution: Record<string, unknown>) => ({ id, title: id, decisionId: `d-${id}`, channels: [], assignments: [], inputs: [], undelivered: [],
+      mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
+      createdAt: '', updatedAt: '', origin: { triggerId: `source-${id}`, triggerIds: [] }, execution: { name: id, assignment: '', ...execution } }) as unknown as Ticket
+    h = await startRuntime(store => {
+      store.tickets.save(ticket('t1', { directory: '/anchors/widgets', repository: 'ACME/widgets', shared: true }))
+      store.tickets.save(ticket('t2', { directory: '/anchors/tools', repository: 'other/tools', shared: true }))
+      store.tickets.save(ticket('t3', { directory: '/w/t3' }))
+    }, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'], repositories: ['other/tools'] })
+    const work = join(h.directory, 'work')
+    expect(['t1', 't2', 't3'].map(id => h!.runtime.store.tickets.get(id)!.execution)).toEqual([
+      { name: 't1', assignment: '', directory: join(work, 't1'), workspace: '/anchors/widgets' },
+      { name: 't2', assignment: '', directory: join(work, 't2'), workspace: '/anchors/tools', repository: 'other/tools' },
+      { name: 't3', assignment: '', directory: '/w/t3' }])
+  })
   it('works where a GitHub Trigger came from, and fails a launch of a ticket whose repository was taken off the list', async () => {
     h = await startRuntime(undefined, { machine: { remoteWorkers: true }, without: ['permissionPresets'], repositories: ['other/tools'] })
     const comment = (id: number, repository?: string) => commentTrigger({ id, body: '@agent-bot fix the margin', user: { login: 'alice', type: 'User' },
@@ -143,10 +166,22 @@ describe('repository Workspaces', () => {
     await h.route({ kind: 'accept', trigger_id: comment(8, 'other/tools').id, title: 'fix', worktree_name: 'fix-tools', acknowledgement: 'On it.' })
     await h.runtime.idle()
     const [primary, tools] = ['fix-margin', 'fix-tools'].map(name => h!.runtime.store.tickets.list().find(ticket => ticket.execution?.name.startsWith(name))!)
-    expect(primary!.execution!.repository).toBe('acme/widgets')
+    expect(primary!.execution).not.toHaveProperty('repository')
     expect(tools!.execution!.repository).toBe('other/tools')
     const setup = (h.runtime as unknown as { setup: { deployment: Deployment } }).setup
-    vi.spyOn(setup, 'deployment', 'get').mockReturnValue(testDeployment({ repositories: ['acme/widgets'] }))
+    // The primary renamed, or another primary configured: the primary's tickets go on there, and bind its PRs.
+    const renamed = testDeployment({ repository: 'acme/renamed', repositories: ['acme/renamed', 'other/tools'] })
+    const deployment = vi.spyOn(setup, 'deployment', 'get').mockReturnValue(renamed)
+    await h.runTool(`worker-${primary!.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+    await h.runtime.engine.retryTicket(primary!.id)
+    await h.runtime.idle()
+    expect(h.runtime.store.tickets.get(primary!.id)!.assignments.at(-1)?.state).toBe('running')
+    expect(pullRepository(renamed, ticketRepository(primary!, h.runtime.store.triggers.get(primary!.origin.triggerId)))).toBeUndefined()
+    const context = h.runtime.context({ kind: 'github', health: ['github'] })
+    await observePull(context, { number: 30, title: 'Fix', state: 'open', html_url: 'https://github.com/acme/renamed/pull/30', user: { login: 'agent-bot' },
+      head: { sha: 'abc', ref: `agent/${primary!.execution!.name}`, repo: { full_name: 'acme/renamed' } } })
+    expect(h.runtime.store.tickets.get(primary!.id)!.follows).toEqual([{ thread: 'github:30', own: true }])
+    deployment.mockReturnValue(testDeployment({ repositories: ['acme/widgets'] }))
     await h.runTool(`worker-${tools!.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
     await h.runtime.engine.retryTicket(tools!.id)
     await h.runtime.idle()

@@ -13,7 +13,7 @@ import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
-import { executionRoot, type Variable } from '../app/execution-environment.ts'
+import { executionRoot, workingDirectory, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
@@ -246,8 +246,8 @@ export class DshExecutor implements Executor {
     return { ...ticket, execution: { ...execution, ...repository ? { repository } : {} } }
   }
   /**
-   * The repository a new ticket works in: the one its origin Trigger came from (a GitHub Trigger without one is the
-   * primary's), else the one the accept names, else the primary.
+   * The additional repository a new ticket works in, or undefined for the primary: the one its origin Trigger came from (a
+   * GitHub Trigger without one is the primary's), else the one the accept names, else the primary.
    * @throws for a repository the GitHub Source does not list, or an accept naming another repository than its Trigger's, which refuses the accept.
    */
   private repositoryOf(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): string | undefined {
@@ -260,7 +260,7 @@ export class DshExecutor implements Executor {
       throw new Error(`The trigger comes from ${fromTrigger}, so its ticket works there; omit repository or name ${fromTrigger}`)
     }
     const named = fromTrigger ?? outcome.repository
-    if (!named) return deployment.repository
+    if (!named || sameName(named, deployment.repository)) return undefined
     const known = deployment.repositories.find(repository => sameName(repository, named))
     if (!known) throw new Error(`${named} is not a repository of the GitHub Source`)
     return known
@@ -269,23 +269,23 @@ export class DshExecutor implements Executor {
    * The directory a ticket's worker Session starts in, and whether it is a repository's shared dsh-yawn Workspace. With
    * repository Workspaces, a new Session starts in the Workspace anchor of the ticket's repository, so dsh-yawn's sandbox
    * clones that repository; an existing Session keeps its directory.
-   * @throws PrepareFailed when the ticket's repository is no longer listed, or dsh-yawn cannot create the Workspace for a reason a retry would not cure.
+   * @throws PrepareFailed when the ticket's additional repository is no longer listed, or dsh-yawn cannot create the Workspace for a reason a retry would not cure.
    */
   private async workspaceOf(ticket: Ticket): Promise<{ directory: string; shared: boolean }> {
     const execution = ticket.execution
-    const own = { directory: execution?.directory ?? '', shared: !!execution?.shared }
-    const repositories = this.host.repositories()
-    if (execution?.repository && repositories && !repositories.repositories.some(name => sameName(name, execution.repository!))) {
+    const deployment = this.host.repositories()
+    if (execution?.repository && deployment && !deployment.repositories.some(name => sameName(name, execution.repository!))) {
       throw new PrepareFailed(`${execution.repository} is no longer a repository of the GitHub Source`)
     }
     const { machine, context } = this.host
-    if (!execution?.repository || !machine.remoteWorkers || !machine.repositoryWorkspaces) return own
+    const directory = workingDirectory(execution, machine)
+    if (!execution || !deployment || !machine.remoteWorkers || !machine.repositoryWorkspaces) return { directory, shared: false }
     // A Session keeps the directory it was created in, and with it its sandbox's repository.
-    if (context.agents.get(workerSessionId(ticket.id) as SessionId)) return own
+    if (context.agents.get(workerSessionId(ticket.id) as SessionId)) return { directory, shared: !!execution.workspace }
     const manager = context.get('sandboxManager') as { createRepositoryWorkspace?(url: string): Promise<string> } | undefined
     if (!manager?.createRepositoryWorkspace) throw new PrepareFailed('repositoryWorkspaces is on, but this host has no dsh-yawn sandbox manager to create repository Workspaces')
     // The URL form dsh-octo-sts registers Workspace secrets under, so both name one Workspace.
-    const url = `https://github.com/${execution.repository}`
+    const url = `https://github.com/${execution.repository ?? deployment.repository}`
     let creating = this.workspaces.get(url)
     if (!creating) {
       creating = manager.createRepositoryWorkspace(url).finally(() => { this.workspaces.delete(url) })
@@ -295,10 +295,12 @@ export class DshExecutor implements Executor {
       if (transient(error)) throw error
       throw new PrepareFailed(`The dsh-yawn Workspace of ${url} could not be created: ${error instanceof Error ? error.message : String(error)}`)
     })
-    this.host.store.atomic(() => {
-      const stored = this.host.store.tickets.get(ticket.id)
-      if (stored?.execution) this.host.store.tickets.save({ ...stored, execution: { ...stored.execution, directory: anchor, shared: true } })
-    })
+    if (anchor !== execution.workspace) {
+      this.host.store.atomic(() => {
+        const stored = this.host.store.tickets.get(ticket.id)
+        if (stored?.execution) this.host.store.tickets.save({ ...stored, execution: { ...stored.execution, workspace: anchor } })
+      })
+    }
     return { directory: anchor, shared: true }
   }
   /**
@@ -376,7 +378,7 @@ export class DshExecutor implements Executor {
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
+            await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker')
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
