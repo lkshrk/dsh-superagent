@@ -92,7 +92,8 @@ export function ModelField({ id, value, onChange, required }: { id: string; valu
       ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
     <div className="dt-grid3">
-      {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
+      {input('provider', t('modelProvider'), t(required ? 'modelRequired' : 'modelInherit'))}{input('model', t('modelName'),
+        t(required ? 'modelRequired' : 'modelInherit'))}{input('effort',
         t('modelEffort'), t('modelEffortDefault'))}
     </div>
     <datalist id={`${id}-providers`}>{catalog?.groups.map(group => <option key={group.id}

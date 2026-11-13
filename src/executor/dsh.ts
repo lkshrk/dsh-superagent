@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
+import { z } from 'zod'
 import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
@@ -19,8 +20,8 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import type { Commands } from '../infra/commands.ts'
-import { readGithub } from '../sources/github-read.ts'
-import { qualifier, SOURCE as GITHUB } from '../sources/github-trigger.ts'
+import { ticketRepository } from '../sources/github-pull.ts'
+import { SOURCE as GITHUB } from '../sources/github-trigger.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -92,20 +93,35 @@ export interface ExecutorHost {
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
   host.store.triggers.get(ticket.origin.triggerId)
 const LABELS_READ_MS = 5000
+const LABELS_READS = 2
+const LiveLabelsSchema = z.array(z.looseObject({ name: z.string() }))
 /**
- * The labels that pick a ticket's worker model: a GitHub Issue's or PR's current labels, read from GitHub, or the origin
- * trigger's `meta.labels` when the ticket did not come from GitHub or the read fails or exceeds `LABELS_READ_MS`.
+ * The labels that pick a ticket's worker model: a GitHub Issue's or PR's current labels, read from GitHub (tried twice within
+ * `LABELS_READ_MS`), or the origin trigger's `meta.labels` when the ticket did not come from GitHub, or the reads fail, time
+ * out or return no readable `labels`.
+ * @throws when `host.lifetime` aborts, so a stopping runtime picks no model from a guess.
  */
-export async function ticketLabels(host: Pick<ExecutorHost, 'store' | 'commands'>, ticket: Ticket): Promise<unknown> {
+export async function ticketLabels(host: Pick<ExecutorHost, 'store' | 'commands' | 'lifetime'>, ticket: Ticket): Promise<unknown> {
   const source = sourceTrigger(host, ticket)
   const number = source?.meta.number
   if (source?.source !== GITHUB || typeof number !== 'number') return source?.meta.labels
-  const repository = ticket.execution?.repository ?? qualifier(source.meta)
-  const resource = `github/${repository ? `${repository}/` : ''}${source.meta.isPr ? 'pulls' : 'issues'}/${number}`
+  const deadline = new AbortController()
+  const timer = setTimeout(() => { deadline.abort() }, LABELS_READ_MS)
+  const signal = AbortSignal.any([host.lifetime, deadline.signal])
+  const stopping = () => { if (host.lifetime.aborted) throw new Error('dsh-superagent is stopping') }
   try {
-    const item = await readGithub(host.commands.withSignal(AbortSignal.timeout(LABELS_READ_MS)), resource) as { labels?: unknown }
-    return item.labels ?? []
-  } catch { return source.meta.labels }
+    for (let attempt = 0; attempt < LABELS_READS && !signal.aborted; attempt++) {
+      try {
+        const commands = host.commands.withSignal(signal).repo(ticketRepository(ticket, source))
+        const item = await until(commands.api(z.looseObject({ labels: z.unknown() }), `${source.meta.isPr ? 'pulls' : 'issues'}/${number}`), signal)
+        if (item === false) break
+        const labels = LiveLabelsSchema.safeParse(item.labels)
+        return labels.success ? labels.data.map(label => label.name) : source.meta.labels
+      } catch { stopping() }
+    }
+    stopping()
+    return source.meta.labels
+  } finally { clearTimeout(timer) }
 }
 
 /**
@@ -400,7 +416,7 @@ export class DshExecutor implements Executor {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker',
-              await this.labels(ticket, sessionId))
+              () => ticketLabels(this.host, ticket))
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -509,11 +525,6 @@ export class DshExecutor implements Executor {
     })
   }
   private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
-  /** The labels a new worker Session's model is picked by; a running Session keeps its model, so nothing is read for it. */
-  private async labels(ticket: Ticket, sessionId: string): Promise<unknown> {
-    if (!this.host.store.settings().executor.modelRules.length || this.host.context.agents.get(sessionId as SessionId)) return undefined
-    return ticketLabels(this.host, ticket)
-  }
   private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
     const current = () => {
       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
@@ -533,7 +544,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', await this.labels(ticket, sessionId))
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', () => ticketLabels(this.host, ticket))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

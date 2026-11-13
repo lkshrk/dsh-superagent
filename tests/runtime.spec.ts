@@ -501,11 +501,39 @@ describe('the worker model picked by the ticket\'s labels', () => {
     expect(selected(await accept(mention))).toEqual(fable)
     expect(reads.length).toBeGreaterThan(0)
   })
+  /** Answers GitHub's read of PR 8 with `answer`, counting the reads. */
+  function pull8(answer: () => Promise<unknown>): string[] {
+    const reads: string[] = []
+    const gh = vi.mocked(Commands.prototype.gh).getMockImplementation()!
+    vi.spyOn(Commands.prototype, 'gh').mockImplementation(async function (this: Commands, args: string[]) {
+      if (args[1] !== 'repos/acme/widgets/pulls/8') return gh.call(this, args)
+      reads.push(args[1])
+      return answer() as never
+    } as never)
+    return reads
+  }
+  const opened = pullTrigger({ number: 8, title: 'Fix', body: '@agent-bot please fix', user: { login: 'alice' }, created_at: '2026-09-09T00:00:00Z',
+    html_url: 'https://github.com/acme/widgets/pull/8', labels: [{ name: 'hard' }] }, 'agent-bot')
   it('falls back to the labels of a GitHub ticket\'s origin trigger when reading its current labels fails', async () => {
-    const opened = pullTrigger({ number: 8, title: 'Fix', body: '@agent-bot please fix', user: { login: 'alice' }, created_at: '2026-09-09T00:00:00Z',
-      html_url: 'https://github.com/acme/widgets/pull/8', labels: [{ name: 'hard' }] }, 'agent-bot')
-    // The default GitHub answer for a PR lacks an Issue's fields, so the read fails its schema.
+    const reads = pull8(async () => { throw new CliError('HTTP 502', 502) })
     expect(selected(await accept(opened))).toEqual(fable)
+    expect(reads).toHaveLength(2)
+  })
+  it('follows a label removed after the mention', async () => {
+    pull8(async () => ({ labels: [] }))
+    expect(selected(await accept(opened))).toEqual(opus)
+  })
+  it('seeds no model when the runtime stops during the read', async () => {
+    let reading!: () => void
+    const started = new Promise<void>(resolve => { reading = resolve })
+    pull8(() => { reading(); return new Promise(() => {}) })
+    const accepted = accept(opened).catch(() => undefined)
+    await started
+    const sessionId = `worker-${runtime.store.tickets.list()[0]!.id}`
+    await runtime.stop()
+    await accepted
+    expect(agents.has(sessionId)).toBe(true)
+    expect(selected(sessionId)).toBeUndefined()
   })
   it('uses the labels another Source put on its trigger, without reading GitHub', async () => {
     const gh = vi.spyOn(Commands.prototype, 'gh')

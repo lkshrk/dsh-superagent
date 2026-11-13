@@ -258,6 +258,11 @@ describe('settings migration', () => {
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
+  it('reads stored settings from before model rules as having none, keeping the Executor\'s model', () => {
+    const model = { provider: 'litellm', model: 'opus' }
+    const stored = SettingsSchema.parse(migrateSettings({ executor: { model, maxWorkers: 2 } }))
+    expect(stored.executor).toMatchObject({ model, modelRules: [] })
+  })
   it('leaves chats that were observed only while admission was off outside the Feishu Source', () => {
     const migrated = SettingsSchema.parse(migrateSettings({ allowedChats: [CHAT], members: [], admission: { mode: 'off', chats: [OBSERVED] } }))
     expect(migrated.sources.feishu!.config).toEqual({ chats: [{ chatId: CHAT, listen: 'mentions' }], directMessages: true })

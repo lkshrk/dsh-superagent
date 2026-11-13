@@ -220,6 +220,14 @@ it('words each settings save by what it changed from the one before, and nothing
   expect(changes(revision + 1)).toBeNull()
 })
 
+it('records a change of the Executor\'s model rules in the settings history', () => {
+  const host = views()
+  const first = store.settings()
+  store.saveSettings({ ...first, executor: { ...first.executor, modelRules: [{ label: 'hard', model: { provider: 'p', model: 'fable' } }] } })
+  const revision = store.get(KV.settings.revision)!
+  expect(policyHistory(store, host.sources, 'v').items.find(item => item.revision === revision)!.changes).toEqual([{ code: 'executorModelRules' }])
+})
+
 it('names a listed bot as the Policy lists it, and gives a bot\'s Mandate a basis fact of its own', () => {
   store.saveSettings(SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [], bots: [{ id: 'cli_review', name: '评审机器人' }] } } } }))
   const sources = new SourceRegistry(() => store.settings())

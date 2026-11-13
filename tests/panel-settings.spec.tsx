@@ -158,6 +158,8 @@ it('does not save a model rule that names no model', async () => {
   await type(field<HTMLInputElement>(zh.modelRuleLabel), 'hard')
   const [, , , ruleProvider, ruleModel] = all('.dt-model input')
   expect([(ruleProvider as HTMLInputElement).required, (ruleModel as HTMLInputElement).required]).toEqual([true, true])
+  expect([(ruleProvider as HTMLInputElement).placeholder, (ruleModel as HTMLInputElement).placeholder]).toEqual([zh.modelRequired, zh.modelRequired])
+  expect((all('.dt-model input')[0] as HTMLInputElement).placeholder).toBe(zh.modelInherit)
   await click(zh.save)
   expect(server.requests.filter(request => request.method === 'PUT')).toEqual([])
   await type(ruleProvider as HTMLInputElement, 'worker-provider')
@@ -166,4 +168,16 @@ it('does not save a model rule that names no model', async () => {
   await type(ruleModel as HTMLInputElement, 'worker-model')
   await click(zh.save)
   expect(server.settings.executor.modelRules).toEqual([{ label: 'hard', model: { provider: 'worker-provider', model: 'worker-model' } }])
+})
+
+it('removes a model rule row', async () => {
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, modelRules: [
+    { label: 'hard', model: { provider: 'p', model: 'fable' } }, { label: 'big', model: { provider: 'p', model: 'opus' } }] } }
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(document.querySelector<HTMLElement>(`[aria-label="${zh.removeRow.replace('{name}', 'hard')}"]`)!)
+  expect(all('.dt-model').length).toBe(2)
+  await click(zh.save)
+  expect(server.settings.executor.modelRules).toEqual([{ label: 'big', model: { provider: 'p', model: 'opus' } }])
 })
