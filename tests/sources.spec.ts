@@ -421,11 +421,11 @@ describe('github source', () => {
     const agentsPull = (number: number): Pull => ({ ...openPull(number), user: { login: 'agent-bot' }, head: { sha: 'abc',
       ref: 'agent/one', repo: { full_name: 'acme/widgets' } } })
     await observePull(h, agentsPull(9))
-    expect(pullOf(h.store.tickets.get('t1')!)).toBe(9)
+    expect(pullOf(h.store.tickets.get('t1')!)?.number).toBe(9)
     expect(h.store.threads.get('github:9')?.subscriptions).toEqual(['t1'])
     // A ticket that follows a PR moves to another only by its Executor's report.
     await observePull(h, agentsPull(10))
-    expect(pullOf(h.store.tickets.get('t1')!)).toBe(9)
+    expect(pullOf(h.store.tickets.get('t1')!)?.number).toBe(9)
     expect(await observePull(h, endedPull(9, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { by: 'executor', outcome: 'merged', at: '2026-09-02T00:00:00.000Z' } })
     expect(h.store.threads.get('github:9')?.subscriptions).toEqual(['t1'])
@@ -454,7 +454,7 @@ describe('github source', () => {
     expect(h.store.tickets.get('t3')).toMatchObject({ follows: [{ thread: 'github:21', own: true },
       { thread: 'github:22', own: true, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'merged' } }] })
     expect(h.store.tickets.get('t3')).not.toHaveProperty('ended')
-    expect(pullOf(h.store.tickets.get('t3')!)).toBe(21)
+    expect(pullOf(h.store.tickets.get('t3')!)?.number).toBe(21)
     expect(h.executor.stop).not.toHaveBeenCalled()
     expect(await observePull(h, endedPull(21, '2026-09-03T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t3')).toMatchObject({ ended: { outcome: 'merged', at: '2026-09-03T00:00:00.000Z' } })
@@ -986,12 +986,46 @@ describe('github source', () => {
     expect(h.store.tickets.get('t1')!.follows).toEqual([{ thread: 'github:30', own: false }])
     expect(claimPull(h, 't1', agents(43, 'agent/fix-1'))).toBeUndefined()
     expect(h.store.tickets.get('t1')).toMatchObject({ follows: [{ thread: 'github:30', own: false }, { thread: 'github:43', own: true }], channels: [] })
-    expect(pullOf(h.store.tickets.get('t1')!)).toBe(43)
+    expect(pullOf(h.store.tickets.get('t1')!)?.number).toBe(43)
     expect(h.store.threads.get('github:43')).toMatchObject({ subscriptions: ['t1'], meta: { isPr: true, prAuthor: 'agent-bot' } })
     // The PR the ticket started from is not one it opened: when its own PR merges, the ticket ends instead of following it.
     expect(await observePull(h, endedPull(43, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { outcome: 'merged' } })
     expect(claimPull(h, 't1', openPull(30))).toBe('Ticket ended because its PR was closed')
+    h.store.close()
+  })
+  it('keeps the PRs of an additional repository apart from the primary\'s PRs with the same number', async () => {
+    const h = host({ deployment: testDeployment({ repositories: ['acme/widgets', 'other/tools'] }) })
+    const source = commentTrigger({ id: 1, body: '@agent-bot fix', user: { login: 'alice' },
+      html_url: 'https://github.com/other/tools/pull/30#issuecomment-1' }, { number: 30, isPr: true, repository: 'other/tools' }, 'conversation', 'agent-bot')
+    h.store.triggers.save(source)
+    h.store.tickets.save({ ...openTicket('t1'), execution: execution('fix-1'), origin: { triggerId: source.id, triggerIds: [source.id] } })
+    h.store.tickets.save({ ...openTicket('t2'), execution: execution('other-2'), ...pulled(41) })
+    const tools = (number: number, ref = 'agent/fix-1'): Pull => ({ ...openPull(number), repository: 'other/tools', user: { login: 'agent-bot' },
+      html_url: `https://github.com/other/tools/pull/${number}`, head: { sha: 'abc', ref, repo: { full_name: 'other/tools' } } })
+    // The source PR is #30 of its own repository, not the primary's #30.
+    expect(claimPull(h, 't1', openPull(30))).toContain('PR does not belong to this ticket')
+    expect(claimPull(h, 't1', { ...tools(30), user: { login: 'carol' } })).toBeUndefined()
+    // An agent PR in the primary repository from the ticket's branch is the agent's too; #41 of the other repository is no one's yet.
+    expect(claimPull(h, 't1', { ...openPull(41), user: { login: 'agent-bot' }, head: { sha: 'abc', ref: 'agent/fix-1', repo: { full_name: 'other/tools' } } }))
+      .toContain('PR does not belong to this ticket')
+    expect(claimPull(h, 't1', tools(41))).toBeUndefined()
+    expect(h.store.tickets.get('t1')!.follows).toEqual([{ thread: 'github:other/tools#30', own: false }, { thread: 'github:other/tools#41', own: true }])
+    expect(pullOf(h.store.tickets.get('t1')!)).toEqual({ number: 41, repository: 'other/tools', id: 'other/tools#41' })
+    expect(h.store.threads.get('github:other/tools#41')).toMatchObject({ subscriptions: ['t1'], meta: { repository: 'other/tools', isPr: true } })
+    // The primary's #41 closing ends only the ticket that follows it.
+    expect(await observePull(h, endedPull(41, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(h.store.tickets.get('t1')).not.toHaveProperty('ended')
+    expect(await observePull(h, { ...tools(41), state: 'closed', merged: true, merged_at: '2026-09-03T00:00:00Z' })).toBe(true)
+    const ended = h.store.tickets.get('t1')!
+    expect(ended).toMatchObject({ ended: { outcome: 'merged' } })
+    const channel = { source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1' } }
+    expect(pullEndNotices({ ...ended, channels: [channel] }, 'fix it', 'acme/widgets'))
+      .toEqual([expect.objectContaining({ text: '[PR #41](https://github.com/other/tools/pull/41) has merged.' })])
+    expect(githubKind.channel!.link({ number: '41', repository: 'other/tools' }, { repository: 'acme/widgets' }))
+      .toEqual({ url: 'https://github.com/other/tools/issues/41', label: { zh: 'GitHub other/tools#41', en: 'GitHub other/tools#41' } })
+    expect(githubKind.channel!.link({ number: '41' }, { repository: 'acme/widgets' }))
+      .toEqual({ url: 'https://github.com/acme/widgets/issues/41', label: { zh: 'GitHub #41', en: 'GitHub #41' } })
     h.store.close()
   })
 })
@@ -1268,6 +1302,55 @@ describe('observing the GitHub repository', () => {
     observe(h, {})
     await pollRound(h)
     expect(h.store.get('github-stream:issues')).toBeUndefined()
+    h.store.close()
+  })
+  it('reads each configured repository on its own, qualifies what an additional one brings, and leaves out one that stays unreadable', async () => {
+    const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools', 'other/gone'], unverified: { 'other/gone': 'cannot read other/gone' } })
+    const h = host({ deployment, commands: new Commands(() => deployment, {}, new AbortController().signal) })
+    const configure = (repositories: string[]) => h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources,
+      github: { enabled: true, config: { observeIssues: true, repositories: repositories.map(repository => ({ repository })) } } } })
+    configure(['other/tools', 'other/gone'])
+    h.store.set('github-since', at(-24))
+    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set('github-stream:other/tools#issues', { since: at(0), started: { issues: at(0) } })
+    const tools = (number: number) => issue(number, { created_at: at(2), updated_at: at(2), html_url: `https://github.com/other/tools/issues/${number}` })
+    const calls: string[] = []
+    // Each repository's commands are their own instance, so the stand-in replaces every instance's transport.
+    const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+      calls.push(args[1]!)
+      const path = args[1]!.split('?')[0]!
+      if (path.endsWith('/notifications')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
+      if (path === 'repos/acme/widgets/issues') return `HTTP/2.0 200 OK\r\n\r\n${JSON.stringify([issue(4, { created_at: at(2), updated_at: at(2) })])}`
+      if (path === 'repos/other/tools/issues') return `HTTP/2.0 200 OK\r\n\r\n${JSON.stringify([tools(4)])}`
+      throw refused(404, 'Not Found')
+    })
+    await pollRound(h)
+    const triggers = h.receive.mock.calls.map(([trigger]) => trigger)
+    expect(triggers.map(trigger => [trigger.id, trigger.threads[0]!.id, trigger.meta.repository, trigger.channel?.address]))
+      .toEqual([[issueTrigger(issue(4), 'agent-bot').id, '4', undefined, { number: '4', url: 'https://github.com/acme/widgets/issues/4' }],
+        [key('github-issue', 'other/tools#4'), 'other/tools#4', 'other/tools', { number: '4', url: 'https://github.com/other/tools/issues/4', repository: 'other/tools' }]])
+    expect(await h.receive.mock.results[1]!.value).toBe('stored')
+    expect(h.store.get('github-stream:other/tools#issues')).toEqual({ since: cursorAt(at(2)), started: { issues: at(0) } })
+    expect(h.store.threads.get('github:other/tools#4')?.meta.title).toBe('Issue 4')
+    // The unverified repository is checked again each round, read for nothing else, and named on the health as an error.
+    expect(calls.filter(path => path.startsWith('repos/other/gone'))).toEqual(['repos/other/gone'])
+    expect(h.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/gone: gh: Not Found (HTTP 404)') })
+    // Once it can be read, it is polled like the others.
+    run.mockImplementation(async (_program, args) => {
+      calls.push(args[1]!)
+      const path = args[1]!.split('?')[0]!
+      if (path.endsWith('/notifications')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
+      if (path === 'repos/other/gone') return JSON.stringify({ permissions: { push: true } })
+      if (path.endsWith('/issues')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
+      throw refused(404, 'Not Found')
+    })
+    await pollRound(h)
+    expect(calls.filter(path => path.startsWith('repos/other/gone/issues'))).toHaveLength(1)
+    expect(h.health.github).toMatchObject({ state: 'ready' })
+    // A repository taken off the list is no longer heard.
+    configure([])
+    expect(h.engine.receive(issueTrigger(tools(5), 'agent-bot', 'other/tools'))).toBe('filtered')
+    run.mockRestore()
     h.store.close()
   })
   it('skips a GitHub App agent\'s own items in the repository streams, but not a person whose login is its slug', async () => {

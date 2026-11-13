@@ -5,7 +5,7 @@ import { CliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
-import { githubAddress, githubPage } from './github-trigger.ts'
+import { githubAddress, githubPage, qualifier } from './github-trigger.ts'
 
 const CommentSchema = z.looseObject({
   id: z.number(), body: z.string().nullish(), in_reply_to_id: z.number().nullish(), user: z.looseObject({ login: z.string() }).nullish(),
@@ -16,13 +16,14 @@ const gone = (error: unknown): boolean => error instanceof CliError
 const missing = (error: unknown): boolean => error instanceof CliError && (error.code === 404 || error.code === 410)
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
-  const { commands } = host
-  const { repository, github } = commands.deployment
+  const repository = qualifier(message.channel.address)
+  const commands = repository ? host.commands.repo(repository) : host.commands
+  const { github } = commands.deployment
   const number = Number(message.channel.address.number)
   if (!number) throw new Error('Missing GitHub reply target')
   try {
     // Retained trigger URLs also route replies queued before thread-aware delivery.
-    const address = githubAddress(message.channel.address.url ?? '', repository)
+    const address = githubAddress(message.channel.address.url ?? '', commands.repository)
     let rootId: number | undefined
     if (address?.pr && address.discussion && address.number === number) {
       // Fall back to a top-level PR comment if the target inline review comment was deleted.
@@ -45,8 +46,10 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
 }
 export function githubLink(address: Record<string, string>, links: ChannelLinks): ChannelLink {
   const number = address.number ?? ''
-  const review = !!links.repository && !!githubAddress(address.url ?? '', links.repository)?.discussion
-  return { url: address.url ?? (links.repository ? githubPage(links.repository, Number(number)) : ''),
-    label: review ? { zh: `GitHub #${number} 的 review 讨论`, en: `Review discussion on GitHub #${number}` }
-      : { zh: `GitHub #${number}`, en: `GitHub #${number}` } }
+  const repository = qualifier(address) ?? links.repository
+  const review = !!repository && !!githubAddress(address.url ?? '', repository)?.discussion
+  const where = qualifier(address) ? `${repository}#${number}` : `#${number}`
+  return { url: address.url ?? (repository ? githubPage(repository, Number(number)) : ''),
+    label: review ? { zh: `GitHub ${where} 的 review 讨论`, en: `Review discussion on GitHub ${where}` }
+      : { zh: `GitHub ${where}`, en: `GitHub ${where}` } }
 }

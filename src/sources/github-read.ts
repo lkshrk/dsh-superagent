@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
 import { validItems, type Commands, type Tally } from '../infra/commands.ts'
-import { CommentSchema, IssueSchema, isHumanLogin, reviewPlace, type GithubComment } from './github-trigger.ts'
+import { CommentSchema, IssueSchema, isHumanLogin, qualifier, reviewPlace, type GithubComment } from './github-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
 const CheckSchema = z.looseObject({ name: z.string(), status: z.string(), conclusion: z.string().nullable() })
@@ -99,13 +99,18 @@ function threadMessages(thread: GithubComment[], id: (comment: GithubComment) =>
  * Reads an Issue or PR, a page of its comments or reviews, a review thread, or a CI snapshot as model-facing
  * `{ id, from, at, text, reply_to?, path?, line?, url }` messages rather than raw GitHub API records.
  */
-export async function readGithub(commands: Commands, resource: string): Promise<unknown> {
+export async function readGithub(host: Commands, requested: string): Promise<unknown> {
+  // `github/owner/name/…` names the same originals in an additional repository.
+  const other = /^github\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/((?:issues|pulls|commits)\/.*)$/.exec(requested)
+  const commands = other ? host.repo(other[1]) : host
+  const resource = other ? `github/${other[2]}` : requested
+  const prefix = other ? `github/${other[1]}/` : 'github/'
   // A commit's CI, such as the default branch's, which no PR names.
   const commit = /^github\/commits\/([0-9a-f]{7,40})\/checks$/.exec(resource)
   if (commit) return pullChecks(commands, commit[1]!)
   const match = /^github\/(issues|pulls)\/([1-9]\d*)(?:\/(comments|reviews|checks|thread)(?:\/([1-9]\d*))?)?$/.exec(resource)
   if (!match) {
-    throw new Error('Use github/issues/<number>, github/pulls/<number>, or append /comments/<page>, /reviews/<page>, /thread/<comment-id> or /checks; or github/commits/<sha>/checks')
+    throw new Error('Use github/issues/<number>, github/pulls/<number>, or append /comments/<page>, /reviews/<page>, /thread/<comment-id> or /checks; or github/commits/<sha>/checks; prefix the path with owner/name, as github/owner/name/issues/<number>, for an additional repository')
   }
   const [, kind, number, section, page = '1'] = match
   if (kind === 'issues' && (section === 'reviews' || section === 'checks' || section === 'thread')) {
@@ -137,7 +142,7 @@ export async function readGithub(commands: Commands, resource: string): Promise<
     ? githubMessage({ ...item, created_at: item.submitted_at ?? item.created_at }, reviewText(item), String(item.id))
     : { ...githubMessage(item, item.body ?? '', String(item.id)), ...item.in_reply_to_id ? { reply_to: String(item.in_reply_to_id) } : {} })
   return { messages, ...tally.skipped ? { skipped: tally.skipped } : {},
-    ...listed.length === 20 ? { next_resource: `github/${kind}/${number}/${section}/${Number(page) + 1}` } : {} }
+    ...listed.length === 20 ? { next_resource: `${prefix}${kind}/${number}/${section}/${Number(page) + 1}` } : {} }
 }
 /** Reads one page of an Issue or PR conversation (with the Issue/PR description first on page 1), using comment URLs as message IDs. */
 async function conversationPage(commands: Commands, number: number, page: number) {
@@ -158,7 +163,9 @@ async function conversationPage(commands: Commands, number: number, page: number
  */
 export const githubThreadContext: ThreadContext<unknown> = {
   messageId: trigger => trigger.url ?? '',
-  read: async (commands, trigger, part, cursor) => {
+  read: async (host, trigger, part, cursor) => {
+    const repository = qualifier(trigger.meta)
+    const commands = repository ? host.repo(repository) : host
     // The default branch's CI has no conversation; its Trigger is its context.
     if (typeof trigger.meta.branch === 'string') {
       const message = { id: trigger.url ?? trigger.id, from: 'CI', at: trigger.at, text: trigger.text, bot: true as const }

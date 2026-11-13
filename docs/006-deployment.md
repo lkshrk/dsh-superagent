@@ -158,7 +158,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
+1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. To serve more repositories with the same agent account, list them under **Additional repositories**; see [Several repositories](#several-repositories). Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
 3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
 
@@ -181,6 +181,7 @@ A deployment that keeps its configuration in files can manage settings from the 
     managed:
       sources:
         github: { config: { repository: acme/widgets, cli: /usr/local/bin/gh-agent, observeIssues: false } }
+        # With more repositories: { config: { ..., repositories: [acme/gadgets, other/tools] } }
         # As a GitHub App: { config: { ..., login: "my-app[bot]", userId: "41898282", notifications: false, observeIssues: true, observePulls: true, observeComments: true } }
       policy:
         sources:
@@ -243,7 +244,7 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository`, `repositories` as `[{"repository": "owner/name"}]` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
@@ -257,11 +258,19 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
 ```
 
+### Several repositories
+
+One GitHub Source can serve several repositories with one agent account. `repository` is the primary; `repositories` lists the others. Each repository's notifications, streams and default-branch CI are read in turn, with the same switches, allowed list and polling interval. Everything about the primary keeps its unqualified names: Thread `github:12`, resource `github/issues/12`. The others are qualified by their name: Thread `github:owner/name#12`, resource `github/owner/name/issues/12`, and their read positions likewise. Changing the primary therefore makes old numbers refer to the new primary, as before.
+
+Setup fails when the primary cannot be read or pushed to. An additional repository that fails the same check is left out: the GitHub health shows an error naming it, the other repositories are still polled, and every poll checks it again. A Trigger from a repository taken off the list is no longer received, and its Tickets' Mandates no longer hold.
+
+Each repository a round reads costs a notifications request, up to three stream requests (answered 304, free of rate limit, while nothing changed) and, with `observeCi`, about four CI requests. At a 60-second interval with everything on, that is roughly 500 requests an hour per repository, against 5,000 an hour for a user token or a GitHub App installation.
+
 ## Setup checks
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do, unless `remoteWorkers` is on. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the GitHub repository and the agent's push access, then each additional repository, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
 
 The process environment that setup writes:
 

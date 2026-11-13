@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
-import { claimPull, readPull } from '../../sources/github-pull.ts'
+import { claimPull, pullRepository, readPull, ticketRepository } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
@@ -80,12 +80,14 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
         question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
         pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
+        pr_repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).optional().describe('With pr_number: the PR\'s repository, owner/name, when it is not the ticket\'s (DSH_SUPERAGENT_GITHUB_REPOSITORY).'),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
-        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
+        const repository = pullRepository(host.github.deployment, args.pr_repository ?? ticketRepository(current, host.github.triggers.get(current.origin.triggerId)))
+        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal, repository) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)

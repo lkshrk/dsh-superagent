@@ -329,7 +329,7 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'Desktop too?', text: '要不要也改桌面端？' })).toEqual({ status: 'sent' })
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42, human_action: null })
   const bound = runtime.store.tickets.get(ticket.id)!
-  expect(pullOf(bound)).toBe(42)
+  expect(pullOf(bound)?.number).toBe(42)
   expect(bound.attention).toBeUndefined()
   expect(runtime.store.threads.get('github:42')?.subscriptions).toEqual([ticket.id])
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })

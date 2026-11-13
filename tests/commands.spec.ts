@@ -47,6 +47,14 @@ describe('account-isolated operations', () => {
     await expect(new Commands(() => deployment, {}, new AbortController().signal).pages(z.unknown(),
       '../../someone/else/issues')).rejects.toThrow()
   })
+  it('posts a reply on an additional repository\'s Issue in that repository', async () => {
+    const several = testDeployment({ repositories: ['acme/widgets', 'other/tools'] })
+    const commands = new Commands(() => several, {}, new AbortController().signal)
+    const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => args.includes('--slurp') ? '[[]]' : '{}')
+    await send(commands, { ...reply, channel: githubChannel(8, 'https://github.com/other/tools/issues/8', 'other/tools') })
+    expect(run.mock.calls.map(([, args]) => args[1])).toEqual(['repos/other/tools/issues/8/comments', 'repos/other/tools/issues/8/comments'])
+    run.mockRestore()
+  })
   it('routes review-comment replies to the root review comment', async () => {
     const commands = new Commands(() => deployment, {}, new AbortController().signal); vi.spyOn(commands,'pages').mockResolvedValue([])
     const gh = vi.spyOn(commands,'gh').mockResolvedValueOnce({ id: 7, in_reply_to_id: 3 }).mockResolvedValueOnce({})

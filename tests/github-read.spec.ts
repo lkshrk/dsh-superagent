@@ -12,6 +12,14 @@ it('reads a bounded comment page and exposes the next page reference', async () 
   expect(gh).toHaveBeenCalledWith(['api', 'repos/acme/widgets/issues/123/comments?per_page=20&page=2'])
 })
 
+it('reads the originals of an additional repository under its name, and refuses a repository the deployment does not list', async () => {
+  const several = new Commands(() => testDeployment({ repositories: ['acme/widgets', 'other/tools'] }), {}, new AbortController().signal)
+  const gh = vi.spyOn(Commands.prototype, 'gh').mockResolvedValue(Array.from({ length: 20 }, (_, id) => ({ id, body: 'comment' })))
+  expect(await readGithub(several, 'github/other/tools/issues/5/comments/1')).toMatchObject({ next_resource: 'github/other/tools/issues/5/comments/2' })
+  expect(gh).toHaveBeenCalledWith(['api', 'repos/other/tools/issues/5/comments?per_page=20&page=1'])
+  await expect(readGithub(several, 'github/someone/else/issues/5')).rejects.toThrow('not a repository of the GitHub Source')
+})
+
 it('rejects unsupported or escaping paths without making a request', async () => {
   const gh = vi.spyOn(commands, 'gh')
   for (const resource of ['github/../outside', 'github/issues/1/reviews', 'github/pulls/1/checks/2', 'github/issues/1?repo=other']) {

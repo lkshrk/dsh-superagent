@@ -612,6 +612,7 @@ const TEXT = {
   'reason.source_disabled': ['来源已停用', 'Source disabled'],
   'reason.issue_sender_or_admission_disabled': ['Issue 发起人不在名单或主动接单已关闭', 'Issue sender not on the list, or proactive accept off'],
   'reason.source_not_installed': ['来源插件未加载', 'Source plugin not loaded'],
+  'reason.repository_not_listed': ['仓库不在 GitHub 来源的仓库列表里', 'Repository not on the GitHub Source\'s list'],
   'reason.issue_unclaimed_less_than_wait': ['Issue 无人认领未满等待时长', 'Issue unclaimed for less than the wait'],
   // Glossary
   glossary: ['术语表', 'Glossary'],
