@@ -5,6 +5,7 @@ import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
+import { format } from 'node:util'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket, type Trigger } from '../core/index.ts'
 import { mandateInstructions, sourceTrigger, ticketOfSession } from '../executor/dsh.ts'
@@ -136,6 +137,11 @@ export class Sessions {
     // Deliver relays and notices to the main Session in the order they were queued.
     host.effects.handle('relay', ({ text }, requestId) => this.prompt(host.masterId, requestId, text, 'steer'), { ordered: true })
     host.effects.handle('notice', ({ value, summary }, name) => this.inject(name, value, summary), { ordered: true })
+  }
+  /** Logs a line for the operator; dsh-yawn exports no plugin logger output to the container log, so stderr gets it too. */
+  private report(level: 'info' | 'warn', message: string, ...args: unknown[]): void {
+    this.ctx.logger[level](message, ...args)
+    process.stderr.write(`${format(message, ...args)}\n`)
   }
   /** Subscribes to host agent and session events so newly created sessions are decorated and model-budget retries are reflected in health. Call once at startup. */
   install(): void {
@@ -347,19 +353,19 @@ export class Sessions {
       try { mask = { key, linear, dispose: tools.restrict({ allow }) } } finally { building = false }
       previous?.dispose()
       if (epic) {
-        this.ctx.logger.info('dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
+        this.report('info', 'dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
           linear.join(', ') || 'none yet')
       }
     }
     restrict()
     // Runs inside whoever emitted the event, so a failed rebuild keeps the previous mask instead of throwing there.
     const rebuild = () => {
-      try { restrict() } catch (error) { this.ctx.logger.warn('dsh-superagent could not update a Session\'s tools: %s', String(error)) }
+      try { restrict() } catch (error) { this.report('warn', 'dsh-superagent could not update the tools of %s: %s', agent.id, String(error)) }
     }
     const missing = worker && epic ? setTimeout(() => {
       const current = store.tickets.get(ticketId)
       if (mask?.linear.length || !current || !liveTicket(current)) return
-      this.ctx.logger.warn('dsh-superagent split worker %s for ticket %s still has no Linear tools 60 s after it started; is the linear MCP server connected?',
+      this.report('warn', 'dsh-superagent split worker %s for ticket %s still has no Linear tools 60 s after it started; is the linear MCP server connected?',
         agent.id, ticketId)
     }, 60_000) : undefined
     missing?.unref?.()

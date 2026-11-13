@@ -315,6 +315,12 @@ describe('the Linear tools of a worker splitting an epic', () => {
   const call = (sessionId: string, name: string, args: unknown = {}) =>
     vi.mocked(toolsOf(sessionId).guard).mock.calls.map(([guard]) => guard({ name, arguments: args })).find(reason => reason !== undefined)
   const READS = LINEAR.slice(0, 5)
+  /** What reached stderr, the only output of a plugin's that reaches dsh-yawn's container log. */
+  const stderr: string[] = []
+  beforeEach(() => {
+    stderr.length = 0
+    vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr.push(String(chunk)); return true })
+  })
 
   it('lets a split worker and its subagents read Linear and create sub-issues of its epic only', async () => {
     await start()
@@ -401,6 +407,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: none yet`)
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}`)
       expect(logs.filter(line => line.includes(`worker-${tickets.plain}`))).toEqual([])
+      expect(stderr).toContain(`dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}\n`)
     })
 
     it('gives a split worker re-created after a restart the Linear tools of servers that connected before it', async () => {
@@ -422,8 +429,10 @@ describe('the Linear tools of a worker splitting an epic', () => {
         vi.advanceTimersByTime(59_999)
         expect(warnings()).toEqual([])
         vi.advanceTimersByTime(1)
-        expect(warnings()).toEqual([`warn: dsh-superagent split worker ${worker} for ticket ${tickets.split} still has no Linear tools 60 s after it started; `
-          + 'is the linear MCP server connected?'])
+        const warning = `dsh-superagent split worker ${worker} for ticket ${tickets.split} still has no Linear tools 60 s after it started; `
+          + 'is the linear MCP server connected?'
+        expect(warnings()).toEqual([`warn: ${warning}`])
+        expect(stderr.filter(line => line.includes('still has no Linear tools'))).toEqual([`${warning}\n`])
         const recreate = async () => { await release(); await subagent(worker, undefined) }
         const release = async () => { await h!.ctx.parallel('agent/disposed', { agent: h!.agents.get(worker) } as never); h!.agents.delete(worker) }
         await recreate()
@@ -449,6 +458,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
     restrict.mockImplementationOnce(() => { throw new Error('unknown global tool') })
     expect(() => { agentCtx.emit('tools/change') }).not.toThrow()
     expect(restrict).toHaveBeenCalledTimes(1)
+    expect(stderr).toContain(`dsh-superagent could not update the tools of ${worker}: Error: unknown global tool\n`)
     // DSH emits tools/change from inside restrict and dispose; a nested change neither recurses nor rebuilds twice.
     restrict.mockImplementation(() => { agentCtx.emit('tools/change'); return first })
     agentCtx.emit('tools/change')
