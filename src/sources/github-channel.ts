@@ -17,6 +17,8 @@ const missing = (error: unknown): boolean => error instanceof CliError && (error
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const repository = qualifier(message.channel.address)
+  // A reply to a repository taken off the list has nowhere to go.
+  if (repository && !host.commands.deployment.repositories.some(name => sameName(name, repository))) return 'gone'
   const commands = repository ? host.commands.repo(repository) : host.commands
   const { github } = commands.deployment
   const number = Number(message.channel.address.number)

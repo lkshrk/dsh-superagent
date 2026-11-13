@@ -994,6 +994,19 @@ describe('github source', () => {
     expect(claimPull(h, 't1', openPull(30))).toBe('Ticket ended because its PR was closed')
     h.store.close()
   })
+  it('names the ticket\'s repository to its worker, and hears a listed repository whatever the case of its name', () => {
+    const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools'] })
+    const config = githubKind.schema.parse({ repository: 'acme/widgets', repositories: ['other/tools'] })
+    const values = (input: { trigger?: Trigger; ticket?: { repository?: string } }) => githubKind.environment!.values({ deployment, config, ...input })
+    const fromTools = issueTrigger({ number: 3, title: 'Fix', body: '', user: { login: 'carol' }, created_at: '2026-09-01T00:00:00Z',
+      html_url: 'https://github.com/Other/Tools/issues/3' }, 'agent-bot', 'Other/Tools')
+    expect(values({ ticket: { repository: 'other/tools' } }).DSH_SUPERAGENT_GITHUB_REPOSITORY).toBe('other/tools')
+    expect(values({ trigger: fromTools }).DSH_SUPERAGENT_GITHUB_REPOSITORY).toBe('Other/Tools')
+    expect(values({ trigger: fromTools, ticket: {} }).DSH_SUPERAGENT_GITHUB_REPOSITORY).toBe('Other/Tools')
+    expect(values({}).DSH_SUPERAGENT_GITHUB_REPOSITORY).toBe('acme/widgets')
+    expect(githubKind.scope!({ meta: fromTools.meta }, config)).toMatchObject({ listened: true })
+    expect(githubKind.scope!({ meta: { ...fromTools.meta, repository: 'other/renamed' } }, config)).toEqual({ listened: false, reason: 'repository_not_listed' })
+  })
   it('keeps the PRs of an additional repository apart from the primary\'s PRs with the same number', async () => {
     const h = host({ deployment: testDeployment({ repositories: ['acme/widgets', 'other/tools'] }) })
     const source = commentTrigger({ id: 1, body: '@agent-bot fix', user: { login: 'alice' },
@@ -1026,6 +1039,22 @@ describe('github source', () => {
       .toEqual({ url: 'https://github.com/other/tools/issues/41', label: { zh: 'GitHub other/tools#41', en: 'GitHub other/tools#41' } })
     expect(githubKind.channel!.link({ number: '41' }, { repository: 'acme/widgets' }))
       .toEqual({ url: 'https://github.com/acme/widgets/issues/41', label: { zh: 'GitHub #41', en: 'GitHub #41' } })
+    h.store.close()
+  })
+  it('binds an agent PR on a ticket\'s branch only when the ticket works in the PR\'s repository', async () => {
+    const h = host({ deployment: testDeployment({ repositories: ['acme/widgets', 'other/tools'] }) })
+    h.store.tickets.save({ ...openTicket('t1'), execution: execution('fix-1') })
+    h.store.tickets.save({ ...openTicket('t2'), execution: { ...execution('fix-2'), repository: 'other/tools' } })
+    const tools = (number: number, ref: string): Pull => ({ ...openPull(number), repository: 'other/tools', user: { login: 'agent-bot' },
+      html_url: `https://github.com/other/tools/pull/${number}`, head: { sha: 'abc', ref, repo: { full_name: 'other/tools' } } })
+    await observePull(h, tools(5, 'agent/fix-1'))
+    expect(h.store.tickets.get('t1')!.follows ?? []).toEqual([])
+    await observePull(h, agentsPull(6, 'agent/fix-2'))
+    expect(h.store.tickets.get('t2')!.follows ?? []).toEqual([])
+    await observePull(h, tools(7, 'agent/fix-2'))
+    expect(h.store.tickets.get('t2')!.follows).toEqual([{ thread: 'github:other/tools#7', own: true }])
+    await observePull(h, agentsPull(8, 'agent/fix-1'))
+    expect(h.store.tickets.get('t1')!.follows).toEqual([{ thread: 'github:8', own: true }])
     h.store.close()
   })
 })
@@ -1340,7 +1369,7 @@ describe('observing the GitHub repository', () => {
       calls.push(args[1]!)
       const path = args[1]!.split('?')[0]!
       if (path.endsWith('/notifications')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
-      if (path === 'repos/other/gone') return JSON.stringify({ permissions: { push: true } })
+      if (path === 'repos/other/gone') return JSON.stringify({ full_name: 'Other/Gone', permissions: { push: true } })
       if (path.endsWith('/issues')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
       throw refused(404, 'Not Found')
     })
@@ -1350,6 +1379,71 @@ describe('observing the GitHub repository', () => {
     // A repository taken off the list is no longer heard.
     configure([])
     expect(h.engine.receive(issueTrigger(tools(5), 'agent-bot', 'other/tools'))).toBe('filtered')
+    run.mockRestore()
+    h.store.close()
+  })
+  it('keeps notifications, their retries and failures apart by repository, and leaves out a repository GitHub renamed', async () => {
+    const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools', 'other/old'], unverified: { 'other/old': 'unchecked' } })
+    const h = host({ deployment, commands: new Commands(() => deployment, {}, new AbortController().signal) })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources,
+      github: { enabled: true, config: { repositories: [{ repository: 'other/tools' }, { repository: 'other/old' }] } } } })
+    h.store.set('github-since', at(-24))
+    h.store.set('github-since:other/tools', at(-24))
+    const toolsNotification = { ...notification(7), repository: { full_name: 'other/tools' }, subject: { url: 'https://api.github.com/repos/other/tools/issues/7', type: 'Issue', title: '' } }
+    const answers: Record<string, unknown> = {
+      'repos/acme/widgets/notifications': refused(502, 'Bad Gateway'),
+      'repos/other/tools/notifications': [toolsNotification, notification(7)],
+      'repos/other/tools/issues/7': refused(502, 'Bad Gateway'),
+      'repos/other/old': { full_name: 'other/new', permissions: { push: true } },
+    }
+    const calls: string[] = []
+    const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+      calls.push(args[1]!)
+      const answer = answers[args[1]!.split('?')[0]!] ?? refused(404, 'Not Found')
+      if (answer instanceof Error) throw answer
+      return args.includes('--include') ? `HTTP/2.0 200 OK\r\n\r\n${JSON.stringify(answer)}` : JSON.stringify(answer)
+    })
+    // The primary's failure alone fails the round as it did with one repository.
+    await expect(pollRound(h)).rejects.toThrow(/^gh: Bad Gateway \(HTTP 502\)$/)
+    // The primary's #7, notified in another repository's list, is not read there; the additional repository's #7 waits to be read again.
+    expect(calls.filter(path => /issues\/7$/.test(path))).toEqual(['repos/other/tools/issues/7'])
+    expect(Object.keys(h.store.get<Record<string, unknown>>('github-retry')!)).toEqual(['other/tools#7'])
+    expect(h.store.get('github-since')).toBe(at(-24))
+    expect(h.store.get<string>('github-since:other/tools')! > at(-24)).toBe(true)
+    expect(h.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/old: other/old is now other/new on GitHub') })
+    expect(calls.filter(path => path.startsWith('repos/other/old/'))).toEqual([])
+    Object.assign(answers, { 'repos/acme/widgets/notifications': [], 'repos/other/tools/notifications': refused(502, 'Bad Gateway') })
+    await expect(pollRound(h)).rejects.toThrow('Notifications failed: other/tools: Error: gh: Bad Gateway (HTTP 502)')
+    run.mockRestore()
+    h.store.close()
+  })
+  it('forgets what it kept for a repository taken off the list, reads nothing there, and reads a listed one again only within the horizon', async () => {
+    const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools'] })
+    const h = host({ deployment, commands: new Commands(() => deployment, {}, new AbortController().signal) })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources,
+      github: { enabled: true, config: { repositories: [{ repository: 'other/tools' }] } } } })
+    const kept = { 'github-since': at(0), 'github-since:other/tools': '2020-01-01T00:00:00.000Z', 'github-since:other/removed': at(0),
+      'github-stream:other/removed#issues': { since: at(0), started: {} }, 'github-branch-ci:other/removed': { revision: 1 },
+      'github-cursor:other/removed#5': at(0), 'github-ci:other/removed#5': { fingerprint: 'x', revision: 0 }, 'github-cursor:5': at(0),
+      'github-retry': { 'other/removed#6': { since: at(0), pr: false }, 6: { since: at(0), pr: false } } }
+    for (const [name, value] of Object.entries(kept)) h.store.set(name, value)
+    h.store.tickets.save({ ...openTicket('t1'), follows: [{ thread: 'github:other/removed#5', own: true }] })
+    subscribed(h, { source: 'github', id: 'other/removed#8' }, { isPr: false, title: 'Old' })
+    const calls: string[] = []
+    const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+      calls.push(args[1]!)
+      if (args.includes('--include')) return 'HTTP/2.0 200 OK\r\n\r\n[]'
+      return JSON.stringify(args.includes('--slurp') ? [[]] : { id: 6, number: 6, title: 'six', state: 'open', created_at: at(0), html_url: 'https://github.com/acme/widgets/issues/6', user: { login: 'carol' } })
+    })
+    await pollRound(h)
+    expect(calls.filter(path => path.includes('other/removed'))).toEqual([])
+    for (const name of ['github-since:other/removed', 'github-stream:other/removed#issues', 'github-branch-ci:other/removed', 'github-cursor:other/removed#5',
+      'github-ci:other/removed#5']) expect(h.store.get(name)).toBeUndefined()
+    expect(h.store.get('github-retry')).toEqual({})
+    expect(h.store.get('github-cursor:5')).toBe(at(0))
+    const read = calls.find(path => path.startsWith('repos/other/tools/notifications'))!
+    expect(decodeURIComponent(read.split('since=')[1]!) > '2020-01-02').toBe(true)
+    expect(read).not.toContain(encodeURIComponent('2020-01-01T00:00:00.000Z'))
     run.mockRestore()
     h.store.close()
   })

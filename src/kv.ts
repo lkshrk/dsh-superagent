@@ -18,6 +18,10 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
   return Object.assign((...name: A) => `${prefix}${format(...name)}` as Key<V>, { prefix })
 }
 
+/** A record of the primary repository under `base`, and of an additional repository under `base:owner/name` in lower case. */
+const perRepository = <V>(base: string): Family<V, [repository?: string]> =>
+  Object.assign((repository?: string) => record<V>(repository ? `${base}:${repository.toLowerCase()}` : base), { prefix: `${base}:` })
+
 export const KV = {
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
@@ -43,10 +47,10 @@ export const KV = {
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision (`revision`
    * counts reported CI changes so each produces a distinct Trigger ID). Names in an additional repository are qualified as `owner/name#…`.
    */
-  github: { since: (repository?: string) => record<string>(repository ? `github-since:${repository}` : 'github-since'), retries: record<Record<string, Retry>>('github-retry'),
+  github: { since: perRepository<string>('github-since'), retries: record<Record<string, Retry>>('github-retry'),
     cursor: family<string, [id: string | number]>('github-cursor:'),
     stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
-    branchCi: (repository?: string) => record<{ branch?: string; failures?: string[]; revision: number }>(repository ? `github-branch-ci:${repository}` : 'github-branch-ci'),
+    branchCi: perRepository<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
     ci: family<{ fingerprint: string; revision: number }, [id: string | number]>('github-ci:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID

@@ -7,9 +7,9 @@ export const SOURCE = 'github'
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 /**
  * The ID of an Issue, PR or CI Thread within the Source: unqualified (`12`, `ci:main`) in the primary repository, and
- * `owner/name#12` in an additional one, whose name `repository` gives.
+ * `owner/name#12` in an additional one, whose name `repository` gives in lower case, as GitHub matches names.
  */
-export const localId = (local: string | number, repository?: string): string => repository ? `${repository}#${local}` : String(local)
+export const localId = (local: string | number, repository?: string): string => repository ? `${repository.toLowerCase()}#${local}` : String(local)
 /** Splits a Thread ID into its additional repository, if any, and its ID within that repository. */
 export function parseLocal(id: string): { repository?: string; local: string } {
   const at = id.indexOf('#')

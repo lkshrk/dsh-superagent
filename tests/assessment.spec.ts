@@ -20,6 +20,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const commands = {
     repository: 'acme/widgets', deployment: testDeployment(),
     withSignal() { return commands },
+    repo: vi.fn(() => commands),
     gh: vi.fn(async (args: string[]) => {
       await gate.issue
       const number = Number(/issues\/(\d+)/.exec(args[1]!)?.[1])
@@ -57,11 +58,22 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   // Per-Eval state retained by the assessor and released when the Eval ends.
   const kept = assessor as unknown as { evals: Map<string, unknown> }
   const size = () => kept.evals.size
-  return { repo, engine, assessor, tools, size, gate }
+  return { repo, engine, assessor, tools, size, gate, commands }
 }
 const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', threads: [{ source: 'github', id: String(n) }], actor: { source: 'github', id: 'bob' }, human: true,
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
 const signal = new AbortController().signal
+
+it('reads the files of the repository a Trigger came from', async () => {
+  const s = setup()
+  s.engine.receive({ ...issue(4), threads: [{ source: 'github', id: 'other/tools#4' }], meta: { number: 4, repository: 'other/tools' } }); s.engine.evaluateDue()
+  await s.tools.orchestrator_eval_read!({ trigger_id: 'issue-4', resource: 'file', path: 'src/value.ts', offset: 0 }, signal)
+  expect(s.commands.repo).toHaveBeenCalledWith('other/tools')
+  s.engine.receive(issue(5)); s.engine.evaluateDue()
+  vi.mocked(s.commands.repo).mockClear()
+  await s.tools.orchestrator_eval_read!({ trigger_id: 'issue-5', resource: 'file', path: 'src/value.ts', offset: 0 }, signal)
+  expect(s.commands.repo).not.toHaveBeenCalled()
+})
 
 it('keeps nothing for an Eval once it is decided, as for one that timed out', async () => {
   const s = setup()

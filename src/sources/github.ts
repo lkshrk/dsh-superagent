@@ -12,7 +12,7 @@ import { githubLink, sendGithub } from './github-channel.ts'
 import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
-import { KV } from '../kv.ts'
+import { KV, type Family } from '../kv.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { z } from 'zod'
@@ -76,13 +76,15 @@ export const githubKind: SourceKind<GithubConfig> = {
   health: ['github'],
   channel: { send: sendGithub, link: githubLink },
   threadContext: githubThreadContext,
-  // `#12` or `12` names Thread 12 of the primary repository, and `owner/name#12` or a page of an Issue or PR names it in that repository.
-  find: query => {
+  // `#12` or `12` names Thread 12 of the primary repository, and `owner/name#12` or a page of an Issue or PR names it in its repository.
+  find: (query, config) => {
     const text = query.trim()
     const named = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/.exec(text) ?? /github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/(\d+)/.exec(text)
-    if (named) return { threads: [`${SOURCE}:${localId(named[2]!, named[1])}`, `${SOURCE}:${named[2]}`], terms: [] }
-    const number = /^#?(\d+)$/.exec(text)?.[1]
-    return { threads: number ? [`${SOURCE}:${number}`] : [], terms: [] }
+    const number = named?.[2] ?? /^#?(\d+)$/.exec(text)?.[1]
+    if (!number) return { threads: [], terms: [] }
+    // Without a primary repository set, a page of any repository names the Thread by its number, as before there were several.
+    const primary = !named || !config.repository || sameName(named[1]!, config.repository)
+    return { threads: [`${SOURCE}:${primary ? number : localId(number, named[1])}`], terms: [] }
   },
   policy: {
     schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9-]+$/) }).strict()).default([]),
@@ -183,7 +185,7 @@ function configured(deployment: Deployment, name: string): { repository?: string
 const scoped = (ctx: SourceContext, round: Round, repository?: string): Commands => ctx.commands.repo(repository).withSignal(round.signal)
 /** Additional repositories setup could not verify and a later check did verify, by deployment. */
 const verified = new WeakMap<Deployment, Set<string>>()
-const RepositoryAccess = z.looseObject({ permissions: z.looseObject({ push: z.boolean().nullish() }).nullish() })
+const RepositoryAccess = z.looseObject({ full_name: z.string(), permissions: z.looseObject({ push: z.boolean().nullish() }).nullish() })
 /** Checks the additional repositories setup could not verify again, recording the ones still unreadable in the round. */
 async function recheck(ctx: SourceContext, round: Round): Promise<void> {
   const { deployment } = ctx
@@ -193,15 +195,16 @@ async function recheck(ctx: SourceContext, round: Round): Promise<void> {
     if (done.has(name)) continue
     try {
       const access = await scoped(ctx, round, name).api(RepositoryAccess, '')
+      if (!sameName(access.full_name, name)) throw new Error(`${name} is now ${access.full_name} on GitHub; list it under that name.`)
       if (access.permissions?.push !== true && !/\[bot\]$/.test(deployment.github.login)) throw new Error(`@${deployment.github.login} cannot push to ${name}.`)
       done.add(name)
     } catch (error) {
       if (stopped(ctx, round)) return
-      round.unreadable.set(name, error instanceof Error ? error.message : reason)
+      round.unreadable.set(name.toLowerCase(), `${name}: ${error instanceof Error ? error.message : reason}`)
     }
   }
 }
-const usable = (round: Round, repository?: string): boolean => !repository || !round.unreadable.has(repository)
+const usable = (round: Round, repository?: string): boolean => !repository || !round.unreadable.has(repository.toLowerCase())
 const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !ctx.config(SOURCE)
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
@@ -341,16 +344,17 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   const { deployment } = ctx
   const repositories = deployment.repositories.map(name => sameName(name, deployment.repository) ? undefined : name)
     .filter(repository => usable(round, repository))
-  let count = 0, interval = 60, notificationError: { error: unknown } | undefined
+  let count = 0, interval = 60
+  const notificationErrors: { repository?: string | undefined; error: unknown }[] = []
+  forgetRepositories(ctx)
   if (reading) {
-    forgetRetries(ctx)
     for (const repository of repositories) {
       if (stopped(ctx, round)) break
       try {
         const notified = await pollNotifications(ctx, round, repository)
         count += notified.count
         interval = Math.max(interval, notified.interval)
-      } catch (error) { notificationError ??= { error } }
+      } catch (error) { notificationErrors.push({ repository, error }) }
     }
   }
   for (const repository of repositories) {
@@ -359,11 +363,14 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   }
   await pollTicketPulls(ctx, signal, round)
   await pollThreads(ctx, signal, round)
-  if (notificationError) throw notificationError.error
-  if (signal?.aborted) return interval
   // An unverified additional repository reports at once, while the other repositories go on being polled.
-  const unreadable = [...round.unreadable].map(([name, reason]) => `${name}: ${reason}`)
-  if (unreadable.length) ctx.report('github', { state: 'error', detail: `Repositories left out: ${unreadable.join('; ')}`, at: round.started })
+  const unreadable = [...round.unreadable.values()]
+  if (unreadable.length && !signal?.aborted) ctx.report('github', { state: 'error', detail: `Repositories left out: ${unreadable.join('; ')}`, at: round.started })
+  // The primary's failure alone is thrown as it was; several, or an additional repository's, are named by repository.
+  const [first] = notificationErrors
+  if (first && notificationErrors.length === 1 && !first.repository) throw first.error
+  if (first) throw new Error(`Notifications failed: ${notificationErrors.map(({ repository, error }) => `${repository ?? ctx.deployment.repository}: ${String(error)}`).join('; ')}`)
+  if (signal?.aborted) return interval
   if (round.failures.length) throw new Error(`${round.failures.length} GitHub reads failed: ${round.failures.slice(0, 3).join('; ')}`)
   if (unreadable.length) return interval
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
@@ -372,12 +379,25 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   ctx.report('github', { state: 'ready', detail: `${reading ? `${count} notifications` : 'notifications off'}; next poll ≥ ${interval}s${dropped}`, at: round.started })
   return interval
 }
-/** Drops the notification retries of repositories no longer configured. */
-function forgetRetries(ctx: SourceContext): void {
-  const retries = ctx.state.get(KV.github.retries)
-  if (!retries) return
-  const kept = Object.entries(retries).filter(([id]) => { const { repository } = parseLocal(id); return !repository || configured(ctx.deployment, repository) })
-  if (kept.length !== Object.keys(retries).length) ctx.state.set(KV.github.retries, Object.fromEntries(kept))
+const forgotten = new WeakSet<Deployment>()
+/** Drops the read positions, CI baselines and notification retries of additional repositories no longer configured. */
+function forgetRepositories(ctx: SourceContext): void {
+  const { state, deployment } = ctx
+  // The list changes only with a restart, which resolves a new deployment.
+  if (forgotten.has(deployment)) return
+  forgotten.add(deployment)
+  const gone = (repository?: string) => !!repository && !configured(deployment, repository)
+  const prefixed = <V>(family: Family<V, never>, repositoryOf: (rest: string) => string | undefined) => {
+    for (const name of state.keys(family)) if (gone(repositoryOf(name.slice(family.prefix.length)))) state.set(name, undefined)
+  }
+  ctx.atomic(() => {
+    prefixed(KV.github.since, rest => rest)
+    prefixed(KV.github.branchCi, rest => rest)
+    for (const family of [KV.github.stream, KV.github.cursor, KV.github.ci] as Family<unknown, never>[]) prefixed(family, rest => parseLocal(rest).repository)
+    const retries = state.get(KV.github.retries)
+    const kept = Object.entries(retries ?? {}).filter(([id]) => !gone(parseLocal(id).repository))
+    if (retries && kept.length !== Object.keys(retries).length) state.set(KV.github.retries, Object.fromEntries(kept))
+  })
 }
 /**
  * Reads a repository's notifications since its cursor and each Issue or PR they name, advancing the cursor atomically with
@@ -387,7 +407,9 @@ async function pollNotifications(ctx: SourceContext, round: Round, repository?: 
   const { state } = ctx
   const commands = scoped(ctx, round, repository)
   const cursor = KV.github.since(repository)
-  const since = state.get(cursor) ?? round.started
+  // An additional repository listed again after a long time reads no further back than the polling horizon.
+  const stored = state.get(cursor)
+  const since = stored && repository ? new Date(Math.max(Date.parse(stored), Date.parse(round.started) - POLL_HORIZON_MS)).toISOString() : stored ?? round.started
   if (state.get(cursor) === undefined) state.set(cursor, since)
   const path = `notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`
   const raw = await commands.api(path, '--include')

@@ -122,7 +122,7 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   return result.success ? result.data : undefined
 }
 /** Verify the agent's GitHub CLI identity, or take the configured one, and push access to the configured repository. */
-export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? '', signal?: AbortSignal): Promise<Deployment> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository
@@ -157,9 +157,11 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
     if (repositories.some(known => sameName(known, name)) || sameName(name, remote)) continue
     try {
       const canonical = await check(name)
-      if (!repositories.some(known => sameName(known, canonical))) repositories.push(canonical)
+      // An additional repository keeps the name it is listed under, which its Thread IDs and read positions carry.
+      if (!sameName(canonical, name)) throw new SetupError('repositoryRenamed', { repository: name, current: canonical })
+      repositories.push(canonical)
     } catch (error) {
-      if (!(error instanceof SetupError)) throw error
+      if (!(error instanceof SetupError) || signal?.aborted) throw error
       repositories.push(name)
       unverified[name] = error.message
     }

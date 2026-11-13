@@ -80,7 +80,7 @@ export async function observePull(ctx: SourceContext, pr: Pull): Promise<boolean
   const ended = pr.state === 'closed' || !!pr.merged
   if (ended) closePull(ctx, pr)
   else {
-    const candidates = agentPull(pr, ctx.deployment) ? ctx.tickets.open().filter(ticket => ticketBranch(ticket, pr.head.ref)) : []
+    const candidates = agentPull(pr, ctx.deployment) ? ctx.tickets.open().filter(ticket => ticketBranch(ticket, pr.head.ref) && worksIn(ctx, ticket, pr)) : []
     const ticket = candidates.length === 1 ? candidates[0]! : undefined
     // A PR the ticket followed until it closed, and that is open again, is followed again.
     const id = pullThread(pr)
@@ -89,6 +89,11 @@ export async function observePull(ctx: SourceContext, pr: Pull): Promise<boolean
   }
   ctx.threads.describe(`github:${pullThread(pr)}`, { facts: { autoMerge: !ended && pr.auto_merge != null ? AUTO_MERGE_ON : null } })
   return ended
+}
+/** True when the ticket works in the PR's repository; a ticket that names no repository works in the primary. */
+function worksIn(ctx: SourceContext, ticket: Ticket, pr: Pick<Pull, 'repository'>): boolean {
+  const named = ticketRepository(ticket, ctx.triggers.get(ticket.origin.triggerId))
+  return sameName(named && !sameName(named, ctx.deployment.repository) ? named : '', pr.repository ?? '')
 }
 function bind(ctx: SourceContext, ticketId: string, pr: Pull, own: boolean): void {
   ctx.atomic(() => {

@@ -103,15 +103,22 @@ describe('setup', () => {
       `  "api repos/acme/widgets "*) echo '{"name":"acme/widgets","push":true}' ;;`,
       `  "api repos/ACME/Gadgets "*) echo '{"name":"acme/gadgets","push":true}' ;;`,
       `  "api repos/other/tools "*) echo '{"name":"other/tools","push":false}' ;;`,
+      `  "api repos/other/old "*) echo '{"name":"other/new","push":true}' ;;`,
       `  *) echo 'HTTP 404' >&2; exit 1 ;;`, 'esac'].join('\n'))
     const one = await resolveDeployment(machine(), { repository: 'acme/widgets', cli }, probe, path)
     expect(one.repositories).toEqual(['acme/widgets'])
     expect(one).not.toHaveProperty('unverified')
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli,
-      repositories: ['ACME/Gadgets', { repository: 'acme/widgets' }, 'other/tools', 'other/gone', 'acme/gadgets'] }, probe, path)
+      repositories: ['ACME/Gadgets', { repository: 'acme/widgets' }, 'other/tools', 'other/gone', 'acme/gadgets', 'other/old'] }, probe, path)
     expect(deployment.repository).toBe('acme/widgets')
-    expect(deployment.repositories).toEqual(['acme/widgets', 'acme/gadgets', 'other/tools', 'other/gone'])
-    expect(deployment.unverified).toEqual({ 'other/tools': '@Agent-Bot cannot push to other/tools.', 'other/gone': expect.stringContaining('HTTP 404') })
+    expect(deployment.repositories).toEqual(['acme/widgets', 'acme/gadgets', 'other/tools', 'other/gone', 'other/old'])
+    expect(deployment.unverified).toEqual({ 'other/tools': '@Agent-Bot cannot push to other/tools.', 'other/gone': expect.stringContaining('HTTP 404'),
+      'other/old': 'other/old is now other/new on GitHub; list it under that name.' })
+    // A check cut short by shutdown fails setup instead of leaving the repository out.
+    const stopping = new AbortController()
+    const halting: Probe = async argv => { if (argv.includes('repos/other/tools')) { stopping.abort(); throw new Error('aborted') } return probe(argv) }
+    await expect(resolveDeployment(machine(), { repository: 'acme/widgets', cli, repositories: ['other/tools'] }, halting, path, stopping.signal))
+      .rejects.toEqual(setupError('github', 'repositoryUnreadable', { repository: 'other/tools' }))
     await expect(resolveDeployment(machine(), { repository: 'other/gone', cli, repositories: ['acme/widgets'] }, probe, path))
       .rejects.toEqual(setupError('github', 'repositoryUnreadable', { repository: 'other/gone' }))
   })

@@ -53,6 +53,9 @@ describe('account-isolated operations', () => {
     const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => args.includes('--slurp') ? '[[]]' : '{}')
     await send(commands, { ...reply, channel: githubChannel(8, 'https://github.com/other/tools/issues/8', 'other/tools') })
     expect(run.mock.calls.map(([, args]) => args[1])).toEqual(['repos/other/tools/issues/8/comments', 'repos/other/tools/issues/8/comments'])
+    // A reply to a repository taken off the list settles as gone, without a request.
+    expect(await sources.send({ ...reply, channel: githubChannel(8, undefined, 'other/removed') }, commands)).toBe('gone')
+    expect(run).toHaveBeenCalledTimes(2)
     run.mockRestore()
   })
   it('routes review-comment replies to the root review comment', async () => {
