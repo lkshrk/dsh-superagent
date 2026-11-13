@@ -1652,14 +1652,17 @@ describe('origin issue closed', () => {
     expect(h.repo.tickets.get(merged)!.ended).toMatchObject({ outcome: 'merged' })
     expect(archived(h)).toEqual([])
   })
-  it('archives a resumed ticket again when it ends again, and ignores an unknown ticket', () => {
+  it('forgets the close when a ticket resumes, so it archives again only once the issue is reported closed again', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!
     h.engine.report(ticketId, { state: 'ready', summary: 'done' })
     h.engine.issueClosed(ticketId, '2026-09-23T00:05:00Z')
     h.engine.receive(trigger('2', { actor: guest })); h.pump()
     expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    expect(h.repo.tickets.get(ticketId)!.issueClosed).toBeUndefined()
     h.engine.report(ticketId, { state: 'ready', summary: 'done again' })
+    expect(archived(h)).toEqual([ticketId])
+    h.engine.issueClosed(ticketId, '2026-09-23T00:30:00Z')
     expect(archived(h)).toEqual([ticketId, ticketId])
     expect(() => { h.engine.issueClosed('missing', '2026-09-23T00:05:00Z') }).not.toThrow()
   })

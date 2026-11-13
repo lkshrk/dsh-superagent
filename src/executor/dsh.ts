@@ -270,7 +270,7 @@ export class DshExecutor implements Executor {
       retry: [5000, 300_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
-    host.effects.handle('archive', payload => this.archiveQueued(payload.ticketId))
+    host.effects.handle('archive', payload => this.archiveQueued(payload.ticketId), { retry: [5000, 300_000] })
   }
   /** A lost state lock aborts the lifetime without closing; neither may mark a ticket failed. */
   private shuttingDown(): boolean { return this.host.closing() || this.host.lifetime.aborted }

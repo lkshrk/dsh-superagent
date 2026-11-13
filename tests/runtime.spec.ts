@@ -423,8 +423,11 @@ it('archives an ended ticket\'s worker Session once its issue closed, and restor
   expect(registry.unarchiveSession).toHaveBeenCalledWith(sessionId)
   expect(registry.archivedSessionIds).toEqual([])
   expect(deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(true)
-  // It ends again under the closed issue, and is archived again; the main Session never is.
+  // Resuming forgets the close: ending again archives only once the issue is reported closed again; never the main Session.
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'fixed again' })
+  await runtime.idle()
+  expect(registry.archivedSessionIds).toEqual([])
+  runtime.engine.issueClosed(ticket.id, new Date().toISOString())
   await runtime.idle()
   expect(registry.archivedSessionIds).toEqual([sessionId])
   expect(registry.archiveSession.mock.calls.map(([id]) => id)).not.toContain(runtime.masterId)

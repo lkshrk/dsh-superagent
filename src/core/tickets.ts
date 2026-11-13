@@ -267,7 +267,8 @@ export class Tickets extends EnginePart {
     const first = ticket.undelivered.map(id => ticket.inputs.find(input => input.id === id)).find(input => input?.kind === 'trigger' && input.human)
     if (first?.kind !== 'trigger') return
     const at = this.now()
-    delete ticket.ended; ticket.updatedAt = at
+    // A reopened issue would otherwise still count as closed; Sources report the close again if it stays closed.
+    delete ticket.ended; delete ticket.issueClosed; ticket.updatedAt = at
     const assignment = this.newAssignment(ticket)
     // Prepend the resumed marker so it is delivered ahead of the waiting messages.
     const resumed: TicketInput = { id: key('input', ticket.id, 'resumed', first.triggerId), kind: 'resumed', triggerId: first.triggerId, at }
