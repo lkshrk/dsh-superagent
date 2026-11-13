@@ -79,6 +79,18 @@ describe('setup', () => {
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
   })
+  it('takes a configured GitHub App bot identity without reading the account, and leaves push access to the installation', async () => {
+    // An installation token cannot read `user` and reports push as false.
+    const app = program(join(dir, 'bin', 'gh-app'), `case "$*" in\n  "api repos/acme/"*" --jq {name: .full_name, push: .permissions.push}") echo '{"name":"acme/widgets","push":false}' ;;\n  *) exit 1 ;;\nesac`)
+    const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: app, login: 'my-app[bot]', userId: 41898282 }, probe, path)
+    expect(deployment.github).toEqual({ cli: app, login: 'my-app[bot]', noreply: '41898282+my-app[bot]@users.noreply.github.com' })
+    const needs = (code: string, github: unknown) => expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError('github', code))
+    await needs('agentIdentityIncomplete', { repository: 'acme/widgets', cli: app, login: 'my-app[bot]' })
+    await needs('agentIdentityIncomplete', { repository: 'acme/widgets', cli: app, userId: '7' })
+    // A configured user account still needs push access.
+    await needs('repositoryReadOnly', { repository: 'acme/widgets', cli: app, login: 'agent-bot', userId: '7' })
+    await expect(resolveDeployment(machine(), { repository: 'acme/widgets', cli: app, login: 'my app', userId: 7 }, probe, path)).rejects.toThrow('a GitHub login')
+  })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))

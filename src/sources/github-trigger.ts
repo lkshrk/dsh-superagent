@@ -57,8 +57,12 @@ function commentText(comment: GithubComment, kind: 'conversation' | 'inline' | '
   const place = kind === 'inline' && comment.path ? reviewPlace(comment) : ''
   return [decision, place, comment.body ?? ''].filter(Boolean).join('\n\n')
 }
-export const mentions = (text: string, login: string): boolean =>
-  new RegExp(`(?:^|[^a-zA-Z0-9_@])@${escapeRegExp(login)}(?![a-zA-Z0-9_-])`, 'i').test(text)
+/** True when `text` mentions `login`; a GitHub App's bot account is also addressed by its App slug, without `[bot]`. */
+export function mentions(text: string, login: string): boolean {
+  const slug = login.replace(/\[bot\]$/i, '')
+  const suffix = slug === login ? '' : '(?:\\[bot\\])?'
+  return new RegExp(`(?:^|[^a-zA-Z0-9_@])@${escapeRegExp(slug)}${suffix}(?![a-zA-Z0-9_\\[-])`, 'i').test(text)
+}
 const author = (user: { login: string; type?: string }, agent: string) =>
   ({ actor: { source: SOURCE, id: user.login }, human: isHumanLogin(user) && !sameName(user.login, agent) })
 /** Builds a trigger for a comment or review; text is empty for a bodyless comment or a `COMMENTED` review without a body. */

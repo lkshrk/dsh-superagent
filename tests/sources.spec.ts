@@ -340,6 +340,13 @@ describe('github source', () => {
     expect(commentTrigger({ id: 9, body: '@Agent-Bot please fix', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).toMatchObject({ human: true, addressed: 'mention' })
     expect(commentTrigger({ id: 10, body: 'mail@agent-bot.example', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).not.toHaveProperty('addressed')
     expect(commentTrigger({ id: 11, body: 'pushed', user: { login: 'Agent-Bot', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot').human).toBe(false)
+    // A GitHub App's bot account is addressed by its slug too, and is itself automated.
+    const app = (id: number, body: string, login = 'alice') => commentTrigger({ id, body, user: { login, type: login === 'alice' ? 'User' : 'Bot' } }, { number: 7, isPr: true }, 'conversation', 'my-app[bot]')
+    expect(app(12, '@my-app please fix')).toMatchObject({ addressed: 'mention' })
+    expect(app(13, '@My-App[bot] please fix')).toMatchObject({ addressed: 'mention' })
+    expect(app(14, '@my-app-two please fix')).not.toHaveProperty('addressed')
+    expect(app(15, 'pushed', 'my-app[bot]').human).toBe(false)
+    expect(commentTrigger({ id: 16, body: '@agent-bot[bot] hi', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).not.toHaveProperty('addressed')
   })
   it('reads the address of an Issue, a PR or a review comment of the repository, and nothing else', () => {
     expect(githubAddress('https://api.github.com/repos/acme/widgets/pulls/9', 'acme/widgets')).toEqual({ number: 9, pr: true })
@@ -693,6 +700,20 @@ describe('github source', () => {
     expect(h.store.get('github-since')).toBe('2026-09-08T00:00:00.000Z')
     h.store.close()
   })
+  it('skips the notifications when they are switched off and still polls subscribed Threads', async () => {
+    const h = host()
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true, config: { notifications: false } } } })
+    h.store.threads.save({ key: 'github:7', ref: { source: 'github', id: '7' }, createdAt: '2026-09-01T00:00:00Z',
+      lastAt: new Date().toISOString(), subscriptions: ['t'], correlated: [], pending: [], meta: { number: 7, isPr: false,
+      title: 'Login fails' } })
+    const reads = github(h, { notifications: refused(403, 'Resource not accessible by integration'), 'issues/7/comments': [{ id: 3, body: 'still broken',
+      user: { login: 'b', type: 'User' }, created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z' }] })
+    expect(await pollRound(h)).toBe(60)
+    expect(bare(reads)).not.toContain('notifications')
+    expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'still broken' }))
+    expect(h.health.github).toMatchObject({ state: 'ready', detail: 'notifications off; next poll ≥ 60s' })
+    h.store.close()
+  })
   it('takes in the description of a notified PR someone opened since the cursor, as a new PR\'s stream does', async () => {
     const h = host()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')
@@ -1023,8 +1044,8 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(1, 3, eof)).toBeUndefined()
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
-  expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
-    observePulls: false, observeComments: false, observeCi: false })
+  expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', login: '', userId: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
+    observePulls: false, observeComments: false, observeCi: false, notifications: true })
 })
 describe('feishu event consumer', () => {
   let dir: string

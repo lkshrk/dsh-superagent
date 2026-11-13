@@ -30,7 +30,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ### Agent GitHub account
 
-1. Create a GitHub user account for the agent and give it write access to the repository. A GitHub App cannot be the agent, because dsh-superagent reads the account's notifications.
+1. Create a GitHub user account for the agent and give it write access to the repository. To run as a GitHub App instead, see [GitHub App identity](#github-app-identity).
 2. Give it a GitHub CLI that uses only its own credentials:
 
    ```sh
@@ -45,6 +45,18 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    ```
 
    Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way.
+
+#### GitHub App identity
+
+The agent can act as a GitHub App's bot account through an installation token that the CLI wrapper supplies, for example `GH_TOKEN="$(cat /run/token)" exec gh "$@"`. An installation token cannot read `user` or the account's notifications, and reports no push permission on the repository. Set these keys on the GitHub Source:
+
+| Key | Example | Effect |
+| --- | --- | --- |
+| `login` | `my-app[bot]` | The agent's login; setup no longer reads `gh api user`. A login ending in `[bot]` skips the push check: the App installation's permissions decide. |
+| `userId` | `"41898282"` | The bot account's user ID, from `gh api 'users/my-app[bot]' --jq .id`. Set it together with `login`. Commits use `<userId>+<login>@users.noreply.github.com`. |
+| `notifications` | `false` | Skips reading notifications. Switch on `observeIssues`, `observePulls` and `observeComments` so requests still arrive. |
+
+A comment addresses the bot when it mentions `@my-app` or `@my-app[bot]`. Leave both empty for a user account.
 
 ### Feishu bot (optional)
 
@@ -169,6 +181,7 @@ A deployment that keeps its configuration in files can manage settings from the 
     managed:
       sources:
         github: { config: { repository: acme/widgets, cli: /usr/local/bin/gh-agent, observeIssues: false } }
+        # As a GitHub App: { config: { ..., login: "my-app[bot]", userId: 41898282, notifications: false, observeIssues: true, observePulls: true, observeComments: true } }
       policy:
         sources:
           github: { allowed: [{ id: alice }] }

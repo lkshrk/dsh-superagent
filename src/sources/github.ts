@@ -25,7 +25,7 @@ const NotificationSchema = z.looseObject({
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false), notifications: z.boolean().default(true) }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
 const OBSERVED = { issues: 'observeIssues', pulls: 'observePulls', comments: 'observeComments', ci: 'observeCi' } as const
 type Scope = keyof typeof OBSERVED
@@ -45,6 +45,12 @@ export const githubKind: SourceKind<GithubConfig> = {
       hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
+    { key: 'login', type: 'text', advanced: true, pattern: '[A-Za-z0-9\\-]+(\\[bot\\])?', label: { zh: '智能体的 GitHub 账号', en: 'Agent GitHub login' },
+      hint: { zh: '留空时从智能体的 GitHub CLI 读取。CLI 用 GitHub App 的安装令牌时填 App 的机器人账号（例如 my-app[bot]）和它的用户 ID：安装令牌读不到自己的账号，也不报告推送权限，所以机器人账号不检查推送权限。保存后重启 dsh-superagent。', en: 'Read from the agent GitHub CLI when empty. When the CLI uses a GitHub App installation token, set the App\'s bot account (such as my-app[bot]) and its user ID: an installation token cannot read its own account and reports no push permission, so a bot account skips the push check. Saving restarts dsh-superagent.' } },
+    { key: 'userId', type: 'text', advanced: true, pattern: '[1-9][0-9]*', label: { zh: '智能体账号的用户 ID', en: 'Agent account user ID' },
+      hint: { zh: '与账号一起设置；机器人账号的 ID 来自 gh api \'users/<账号>\'。用于提交邮箱 <ID>+<账号>@users.noreply.github.com。', en: 'Set together with the login. A bot account\'s ID comes from gh api \'users/<login>\'. It forms the commit email <id>+<login>@users.noreply.github.com.' } },
+    { key: 'notifications', type: 'switch', advanced: true, label: { zh: '读取智能体的通知', en: 'Read the agent\'s notifications' },
+      hint: { zh: '关闭后不读 GitHub 通知，只靠下面的接收开关和订阅的讨论。GitHub App 的安装令牌读不了通知，用它时关闭。', en: 'When off, GitHub notifications are not read, and only the receive switches below and subscribed discussions bring work in. GitHub App installation tokens cannot read notifications; switch this off for them.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
@@ -271,7 +277,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
   ctx.state.set(KV.github.branchCi, { branch, failures: now, revision })
 }
 /**
- * One polling round: notifications, then observed repository streams, then the PRs of open tickets with their CI, then
+ * One polling round: notifications unless switched off, then observed repository streams, then the PRs of open tickets with their CI, then
  * subscribed Threads. Each step and each Issue, PR, or Thread fails independently so all steps run before the round fails.
  * Other read failures (including 404) fail the round toward the error threshold, whereas deleted (410) or abandoned
  * (24h+) threads are recorded only on the thread and in health detail.
@@ -279,7 +285,9 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
  */
 export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
   const round = newRound(signal)
-  const notified = await pollNotifications(ctx, round).then(value => ({ value }), (error: unknown) => ({ error }))
+  const reading = ctx.config<GithubConfig>(SOURCE)?.notifications !== false
+  const notified = reading ? await pollNotifications(ctx, round).then(value => ({ value }), (error: unknown) => ({ error }))
+    : { value: { count: 0, interval: 60 } }
   await pollRepository(ctx, round)
   await pollTicketPulls(ctx, signal, round)
   await pollThreads(ctx, signal, round)
@@ -291,7 +299,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
-  ctx.report('github', { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${dropped}`, at: round.started })
+  ctx.report('github', { state: 'ready', detail: `${reading ? `${count} notifications` : 'notifications off'}; next poll ≥ ${interval}s${dropped}`, at: round.started })
   return interval
 }
 /** Reads notifications since the cursor and each Issue or PR they name, advancing the cursor atomically with the retry map for failed reads; deleted (410) Issues are dropped once their error is recorded. */
