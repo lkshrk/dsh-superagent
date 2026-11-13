@@ -3,6 +3,8 @@
  * allowed member Alice (`ou_alice`), listened chat `oc_team`, and `auto` eval mode. Stop it with `stop()`.
  */
 import { Context } from '@deepseek-ai/cordis'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,6 +36,11 @@ type FakeAgent = {
   id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }
   cancel: Mock; inject: Mock<(message: UserMessage) => void>; steer: Mock<(message: UserMessage) => void>; followup: Mock<(message: UserMessage) => void>
 }
+/** A tool as DSH's registry takes it, answering an empty text. */
+export const toolDefinition = (name: string) => ({ name, description: name, parameters: { type: 'object' as const, properties: {} },
+  output: { schema: { type: 'string' as const }, render: () => [] }, execute: async () => '' })
+/** The tools DSH's `standard` preset gives its agents, which they inherit from the preset's scope. */
+const PRESET_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'skill', 'todo_write', 'subagent']
 /** A text message, as DSH's job tools and subagents send their notices. */
 const notice = (id: string, text: string) => ({ id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'tool-jobs', form: 'notice' } }) as unknown as UserMessage
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
@@ -148,9 +155,12 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 /**
  * `seed` writes to the database before the Runtime opens it; `machine` overrides the test machine; `without` leaves out DSH
  * services and `services` adds more; `globalTools` are the tools every agent inherits; `repositories` are the GitHub Source's additional ones.
+ * With `realTools`, DSH's own tool registry holds `globalTools` at the root, each agent has its own scope under a preset scope
+ * holding the preset's tools, and `h.tools` stays empty.
  */
 export async function startRuntime(seed?: (store: Store) => void,
-  options: { machine?: Partial<Machine>; without?: readonly string[]; services?: Record<string, unknown>; globalTools?: readonly string[]; repositories?: readonly string[] } = {}) {
+  options: { machine?: Partial<Machine>; without?: readonly string[]; services?: Record<string, unknown>; globalTools?: readonly string[]; repositories?: readonly string[]
+    realTools?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -189,15 +199,18 @@ export async function startRuntime(seed?: (store: Store) => void,
   const controller = {
     create: vi.fn(async ({ sessionId }: { sessionId: string }) => {
       if (agents.has(sessionId)) return
-      const agentCtx = new Context()
-      const sessionTools = new Map<string, RegisteredTool>()
-      tools.set(sessionId, sessionTools)
-      const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
-      const inherited = options.globalTools ?? []
-      agentCtx.reflect.provide('tools', { register, get: (name: string) => inherited.includes(name) ? { name } : undefined,
-        schemas: () => inherited.map(name => ({ name })), restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
-      agentCtx.reflect.provide('skills', { register: () => () => {} })
-      agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
+      const agent = {} as FakeAgent
+      const agentCtx = options.realTools ? createScope(ctx, agent, { parent: preset }).ctx : new Context()
+      if (!options.realTools) {
+        const sessionTools = new Map<string, RegisteredTool>()
+        tools.set(sessionId, sessionTools)
+        const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
+        const inherited = options.globalTools ?? []
+        agentCtx.reflect.provide('tools', { register, get: (name: string) => inherited.includes(name) ? { name } : undefined,
+          schemas: () => inherited.map(name => ({ name })), restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
+        agentCtx.reflect.provide('skills', { register: () => () => {} })
+        agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
+      }
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
         // A pending message taken out, as DSH's inbox does by its id.
         remove: (id: string) => [inbox.nextTurn, inbox.nextStep].some(list => {
@@ -245,10 +258,10 @@ export async function startRuntime(seed?: (store: Store) => void,
           ctx.emit('agent/status', { agent, status: 'idle' } as never)
         })
       })
-      agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), inject: vi.fn(), session, cancel,
+      agents.set(sessionId, Object.defineProperties(agent, Object.getOwnPropertyDescriptors({ id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), inject: vi.fn(), session, cancel,
         get status() { return status }, set status(next: string) { status = next; if (next === 'idle') for (const wake of idle.splice(0)) wake() },
         // Once its turn ended, as DSH's does.
-        whenIdle: () => status === 'idle' ? Promise.resolve() : new Promise<void>(resolve => { idle.push(resolve) }) } as never)
+        whenIdle: () => status === 'idle' ? Promise.resolve() : new Promise<void>(resolve => { idle.push(resolve) }) })))
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(resolveDefault), rename: vi.fn(async () => {}),
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
@@ -264,6 +277,15 @@ export async function startRuntime(seed?: (store: Store) => void,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries({ ...services, ...options.services })) if (!options.without?.includes(name)) ctx.reflect.provide(name, service)
+  const preset = {}
+  if (options.realTools) {
+    ctx.reflect.provide('skills', { register: () => () => {} })
+    ctx.reflect.provide('systemPrompt', { tools: () => () => {}, section: () => () => {}, getSectionOrder: () => 0 })
+    new ToolRuntime(ctx)
+    for (const name of options.globalTools ?? []) ctx.tools.register(toolDefinition(name) as never)
+    const presetCtx = createScope(ctx, preset).ctx
+    for (const name of PRESET_TOOLS) presetCtx.tools.register(toolDefinition(name) as never)
+  }
   // The CLIs answer as the faked subprocess service does, for setup checks that run them on this host.
   for (const cli of [AGENT, BOT]) {
     const cases = Object.entries(answers).filter(([command]) => command.startsWith(`${cli} `))

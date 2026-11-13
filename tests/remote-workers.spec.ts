@@ -2,9 +2,11 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { latestAssignment, type Ticket, type Trigger } from '../src/core/index.ts'
-import { feishu, startRuntime, type Host } from './fixtures/host.ts'
+import { format } from 'node:util'
+import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { feishu, startRuntime, toolDefinition, type Host } from './fixtures/host.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { commentTrigger } from '../src/sources/github-trigger.ts'
 import { observePull, pullRepository, ticketRepository } from '../src/sources/github-pull.ts'
@@ -298,7 +300,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
     ...ended ? { ended: { at: '2026-11-13T00:00:00Z', by: 'person', outcome: 'stopped' } } : {} }) as unknown as Ticket
   const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended' }
   const UNLINKED = GLOBAL.filter(name => !name.startsWith('mcp__linear__'))
-  async function start(globalTools: string[] = [...UNLINKED, ...LINEAR]): Promise<void> {
+  async function start(globalTools: string[] = [...UNLINKED, ...LINEAR], realTools = false): Promise<void> {
     h = await startRuntime(store => {
       store.triggers.save(trigger('t-split', 'linear', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
       store.triggers.save(trigger('t-plain', 'linear', { issue: EPIC, identifier: 'ROU-592' }))
@@ -307,7 +309,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
       store.tickets.save(ticket(tickets.plain, 't-plain'))
       store.tickets.save(ticket(tickets.github, 't-github'))
       store.tickets.save(ticket(tickets.ended, 't-split', true))
-    }, { globalTools, machine: { remoteWorkers: true }, without: ['permissionPresets'] })
+    }, { globalTools, machine: { remoteWorkers: true }, without: ['permissionPresets'], realTools })
     for (const id of Object.values(tickets)) await subagent(`worker-${id}`, undefined)
   }
   const call = (sessionId: string, name: string, args: unknown = {}) =>
@@ -351,19 +353,88 @@ describe('the Linear tools of a worker splitting an epic', () => {
     expect(LINEAR.map(name => call(master, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
   })
 
-  it('admits the Linear tools of a server that connects after the split worker started', async () => {
-    const tools = [...UNLINKED]
-    await start(tools)
-    const worker = `worker-${tickets.split}`
-    expect(allowed(worker)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs'])
-    tools.push(...LINEAR)
-    const agentCtx = (h!.agents.get(worker) as unknown as { ctx: { emit: (event: 'tools/change') => void } }).ctx
-    agentCtx.emit('tools/change')
-    const restrict = vi.mocked(toolsOf(worker).restrict)
-    expect(restrict.mock.calls.at(-1)![0].allow).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...LINEAR.slice(0, 6)])
-    agentCtx.emit('tools/change')
-    expect(restrict).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(toolsOf(`worker-${tickets.plain}`).restrict)).toHaveBeenCalledTimes(1)
+  describe('in DSH\'s tool registry', () => {
+    // As dsh-yawn names them: its server `linear` mounts LiteLLM's `linear_app` endpoint, which prefixes each tool with its name.
+    const SERVED = (server: string, names: string[]) => names.map(name => `mcp__${server}__${server === 'linear' ? 'linear_app' : server}-${name}`)
+    const LITELLM = SERVED('linear', ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment'])
+    const SEARCH = SERVED('searxng', ['searxng_web_search'])
+    const registry = () => h!.ctx.tools as unknown as ToolRuntime
+    const agentOf = (id: string) => h!.agents.get(id) as never
+    const mcpOf = (id: string) => registry().schemas().map(tool => tool.name)
+      .filter(name => (name.startsWith('mcp__') || name.includes('mcp_resource')) && registry().get(name, agentOf(id)) !== undefined)
+    /** The first reason the registry's guards, global then along the agent's scope chain, give for refusing a call. */
+    const reason = (id: string, name: string, args: unknown = {}) => (registry() as unknown as { guardReason: (exec: unknown) => string | undefined })
+      .guardReason({ name, arguments: args, agent: agentOf(id) })
+    const logs: string[] = []
+    /** Mounts MCP servers at the host root, as dsh-yawn does once they connect; returns their unmount. */
+    const connect = (names: string[]) => { const disposers = names.map(name => registry().register(toolDefinition(name) as never)); return () => { disposers.forEach(dispose => { dispose() }) } }
+    beforeEach(() => { logs.length = 0 })
+    async function startReal(): Promise<void> {
+      await start(['list_mcp_resources'], true)
+      h!.ctx.logger.exporter({ levels: { default: 3 }, export: message => { logs.push(`${message.type}: ${format(...message.args as [string])}`) } })
+    }
+
+    it('admits the Linear tools of servers that connect after the split worker and its subagent started, and keeps them across a reconnect', async () => {
+      await startReal()
+      const worker = `worker-${tickets.split}`
+      await subagent('split-child', worker)
+      expect(mcpOf(worker)).toEqual([])
+      const disconnect = connect([...SEARCH, ...LITELLM, 'mcp__context7__context7-query-docs'])
+      for (const id of [worker, 'split-child']) {
+        expect(mcpOf(id)).toEqual([...SEARCH, ...LITELLM.slice(0, 6), 'mcp__context7__context7-query-docs'])
+        expect(reason(id, LITELLM[5]!, { title: 'Part', parentId: 'ROU-592' })).toBeUndefined()
+        expect(reason(id, LITELLM[5]!, { title: 'Part', parentId: 'ROU-1' })).toBe('Only sub-issues of ROU-592 may be created')
+        expect(reason(id, LITELLM[5]!, { id: 'ROU-700', parentId: 'ROU-592' })).toBe('Only new sub-issues of ROU-592 may be created; updating an issue is refused')
+        expect([LITELLM[6]!, 'list_mcp_resources'].map(name => reason(id, name))).toEqual([denied(LITELLM[6]!), denied('list_mcp_resources')])
+      }
+      for (const id of [`worker-${tickets.plain}`, `worker-${tickets.github}`]) {
+        expect(mcpOf(id)).toEqual([...SEARCH, 'mcp__context7__context7-query-docs'])
+        expect(LITELLM.map(name => reason(id, name, { parentId: 'ROU-592' }))).toEqual(LITELLM.map(denied))
+      }
+      const master = h!.runtime.masterId
+      expect(mcpOf(master)).toEqual([])
+      expect(LITELLM.map(name => reason(master, name, { parentId: 'ROU-592' }))).toEqual(LITELLM.map(denied))
+      disconnect()
+      expect(mcpOf(worker)).toEqual([])
+      connect(LITELLM)
+      expect(mcpOf(worker)).toEqual(LITELLM.slice(0, 6))
+      expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: none yet`)
+      expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}`)
+      expect(logs.filter(line => line.includes(`worker-${tickets.plain}`))).toEqual([])
+    })
+
+    it('gives a split worker re-created after a restart the Linear tools of servers that connected before it', async () => {
+      await startReal()
+      const worker = `worker-${tickets.split}`
+      connect(LITELLM)
+      await h!.ctx.parallel('agent/disposed', { agent: h!.agents.get(worker) } as never)
+      h!.agents.delete(worker)
+      await subagent(worker, undefined)
+      expect(mcpOf(worker)).toEqual(LITELLM.slice(0, 6))
+    })
+
+    it('warns when a split worker still has no Linear tools a minute after it started, unless they came or it was released', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        await startReal()
+        const worker = `worker-${tickets.split}`
+        const warnings = () => logs.filter(line => line.startsWith('warn: ') && line.includes('still has no Linear tools'))
+        vi.advanceTimersByTime(59_999)
+        expect(warnings()).toEqual([])
+        vi.advanceTimersByTime(1)
+        expect(warnings()).toEqual([`warn: dsh-superagent split worker ${worker} for ticket ${tickets.split} still has no Linear tools 60 s after it started; `
+          + 'is the linear MCP server connected?'])
+        const recreate = async () => { await release(); await subagent(worker, undefined) }
+        const release = async () => { await h!.ctx.parallel('agent/disposed', { agent: h!.agents.get(worker) } as never); h!.agents.delete(worker) }
+        await recreate()
+        await release()
+        vi.advanceTimersByTime(60_000)
+        await subagent(worker, undefined)
+        connect(LITELLM)
+        vi.advanceTimersByTime(60_000)
+        expect(warnings()).toHaveLength(1)
+      } finally { vi.useRealTimers() }
+    })
   })
 
   it('keeps the previous mask when a rebuild fails, and rebuilds again on a later change', async () => {

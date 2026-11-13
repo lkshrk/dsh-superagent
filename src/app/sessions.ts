@@ -70,7 +70,10 @@ const WORKER_MCP_PREFIXES = ['mcp__searxng__', 'mcp__context7__']
 const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => name.startsWith(prefix))
 /** The Linear MCP tools a worker splitting a Linear epic may use; `save_issue` only creates sub-issues of its epic. */
 const SPLIT_LINEAR_TOOLS = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue']
-  .map(name => `mcp__linear__${name}`)
+/** A LiteLLM server endpoint names its tools `<server>-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
+const SPLIT_LINEAR = new RegExp(`^mcp__linear__(?:[A-Za-z0-9_-]*-)?(${SPLIT_LINEAR_TOOLS.join('|')})$`)
+/** The Linear tool a public tool name stands for when it is one of the split's, such as `save_issue`. */
+const splitLinearTool = (name: string): string | undefined => SPLIT_LINEAR.exec(name)?.[1]
 /** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
 function splitEpic(trigger: Trigger | undefined): string[] | undefined {
   if (trigger?.source !== 'linear' || trigger.meta.mode !== 'split') return undefined
@@ -80,7 +83,7 @@ function splitEpic(trigger: Trigger | undefined): string[] | undefined {
 function createUnder(epic: readonly string[]) {
   const label = epic[0] ?? 'the ticket\'s epic'
   return ({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined => {
-    if (name !== 'mcp__linear__save_issue') return undefined
+    if (splitLinearTool(name) !== 'save_issue') return undefined
     const args = (input ?? {}) as { id?: unknown; parentId?: unknown }
     if (args.id !== undefined) return `Only new sub-issues of ${label} may be created; updating an issue is refused`
     const parent = typeof args.parentId === 'string' ? args.parentId.toLowerCase() : undefined
@@ -300,7 +303,7 @@ export class Sessions {
       if (host.remoteWorkers) binding.disposers.push(agent.ctx.tools.guard(onlyTools(new Set([...MASTER_TOOLS, ...own.map(tool => tool.name)]))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
-      binding.disposers.push(...this.workOnly(agent, ticket!.id, own.map(tool => tool.name)))
+      binding.disposers.push(...this.workOnly(agent, ticket!.id, own.map(tool => tool.name), true))
     }
   }
   /**
@@ -324,31 +327,43 @@ export class Sessions {
    * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent; a ticket
    * splitting a Linear epic also gets the split's Linear tools.
    */
-  private workOnly(agent: Agent, ticketId: string, own: readonly string[] = []): (() => void)[] {
+  private workOnly(agent: Agent, ticketId: string, own: readonly string[] = [], worker = false): (() => void)[] {
     const store = this.host.store
     const tools = agent.ctx.tools
     const parent = scopeParentOf(agent)
     const remote = this.host.remoteWorkers === true
     const ticket = store.tickets.get(ticketId)
     const epic = remote && ticket ? splitEpic(sourceTrigger(this.host, ticket)) : undefined
-    const mcp = (name: string): boolean => workerMcp(name) || epic !== undefined && SPLIT_LINEAR_TOOLS.includes(name)
-    let mask: { key: string, dispose: () => void } | undefined, building = false
+    const mcp = (name: string): boolean => workerMcp(name) || epic !== undefined && splitLinearTool(name) !== undefined
+    let mask: { key: string, linear: string[], dispose: () => void } | undefined, building = false
     // An MCP server may register its tools after this Session started, so the mask follows the registry.
     const restrict = () => {
       const allow = [...WORK_TOOLS.filter(name => tools.get(name, parent)), ...remote ? tools.schemas(parent).map(tool => tool.name).filter(mcp) : []]
       const key = allow.join('\n')
       if (building || mask?.key === key) return
       const previous = mask
+      const linear = allow.filter(name => splitLinearTool(name) !== undefined)
       building = true
-      try { mask = { key, dispose: tools.restrict({ allow }) } } finally { building = false }
+      try { mask = { key, linear, dispose: tools.restrict({ allow }) } } finally { building = false }
       previous?.dispose()
+      if (epic) {
+        this.ctx.logger.info('dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
+          linear.join(', ') || 'none yet')
+      }
     }
     restrict()
     // Runs inside whoever emitted the event, so a failed rebuild keeps the previous mask instead of throwing there.
     const rebuild = () => {
       try { restrict() } catch (error) { this.ctx.logger.warn('dsh-superagent could not update a Session\'s tools: %s', String(error)) }
     }
-    return [() => mask?.dispose(), agent.ctx.on('tools/change', rebuild), tools.guard(() => {
+    const missing = worker && epic ? setTimeout(() => {
+      const current = store.tickets.get(ticketId)
+      if (mask?.linear.length || !current || !liveTicket(current)) return
+      this.ctx.logger.warn('dsh-superagent split worker %s for ticket %s still has no Linear tools 60 s after it started; is the linear MCP server connected?',
+        agent.id, ticketId)
+    }, 60_000) : undefined
+    missing?.unref?.()
+    return [() => { clearTimeout(missing) }, () => mask?.dispose(), agent.ctx.on('tools/change', rebuild), tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
