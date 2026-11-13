@@ -341,11 +341,16 @@ describe('github source', () => {
     expect(commentTrigger({ id: 10, body: 'mail@agent-bot.example', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).not.toHaveProperty('addressed')
     expect(commentTrigger({ id: 11, body: 'pushed', user: { login: 'Agent-Bot', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot').human).toBe(false)
     // A GitHub App's bot account is addressed by its slug too, and is itself automated.
-    const app = (id: number, body: string, login = 'alice') => commentTrigger({ id, body, user: { login, type: login === 'alice' ? 'User' : 'Bot' } }, { number: 7, isPr: true }, 'conversation', 'my-app[bot]')
+    const app = (id: number, body: string, login = 'alice') => commentTrigger({ id, body, user: { login, type: login.endsWith('[bot]') ? 'Bot' : 'User' } }, { number: 7, isPr: true }, 'conversation', 'my-app[bot]')
     expect(app(12, '@my-app please fix')).toMatchObject({ addressed: 'mention' })
     expect(app(13, '@My-App[bot] please fix')).toMatchObject({ addressed: 'mention' })
     expect(app(14, '@my-app-two please fix')).not.toHaveProperty('addressed')
     expect(app(15, 'pushed', 'my-app[bot]').human).toBe(false)
+    expect(app(17, 'a person who owns the slug', 'my-app').human).toBe(true)
+    expect(app(18, '@my-app[bot]x hi')).not.toHaveProperty('addressed')
+    expect(app(19, '@my-app_x hi')).not.toHaveProperty('addressed')
+    expect(app(20, 'thanks @my-app, please fix')).toMatchObject({ addressed: 'mention' })
+    expect(app(21, 'over to @my-app[bot].')).toMatchObject({ addressed: 'mention' })
     expect(commentTrigger({ id: 16, body: '@agent-bot[bot] hi', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).not.toHaveProperty('addressed')
   })
   it('reads the address of an Issue, a PR or a review comment of the repository, and nothing else', () => {
@@ -1263,6 +1268,24 @@ describe('observing the GitHub repository', () => {
     observe(h, {})
     await pollRound(h)
     expect(h.store.get('github-stream:issues')).toBeUndefined()
+    h.store.close()
+  })
+  it('skips a GitHub App agent\'s own items in the repository streams, but not a person whose login is its slug', async () => {
+    const h = host({ deployment: testDeployment({ github: { cli: '/bin/false', login: 'my-app[bot]', noreply: '1+my-app[bot]@users.noreply.github.com' } }) })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources,
+      github: { enabled: true, config: { observeIssues: true, observeComments: true, notifications: false } } } })
+    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set('github-stream:comments', { since: at(0), started: { comments: at(0) } })
+    const comment = (id: number, login: string, type: string) => ({ id, body: `@my-app comment ${id}`, user: { login, type },
+      created_at: at(1), updated_at: at(1), issue_url: 'https://api.github.com/repos/acme/widgets/issues/7',
+      html_url: `https://github.com/acme/widgets/issues/7#issuecomment-${id}` })
+    const calls = repository(h, { issues: [issue(3, { created_at: at(1), updated_at: at(1), user: { login: 'my-app[bot]', type: 'Bot' } }),
+      issue(4, { created_at: at(2), updated_at: at(2), user: { login: 'my-app', type: 'User' } })],
+      comments: [comment(1, 'my-app[bot]', 'Bot'), comment(2, 'my-app', 'User')] })
+    await pollRound(h)
+    expect(calls.some(args => args[1]!.startsWith('notifications'))).toBe(false)
+    expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.actor.id, trigger.human, trigger.addressed]))
+      .toEqual([[4, 'issue', 'my-app', true, undefined], [7, 'conversation', 'my-app', true, 'mention']])
     h.store.close()
   })
   it('takes in the repository\'s conversation and review comments, on the Issue or PR each is on', async () => {

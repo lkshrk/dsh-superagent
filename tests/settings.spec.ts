@@ -2,7 +2,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { Setup } from '../src/app/setup.ts'
+import { Setup, setupChanged } from '../src/app/setup.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
@@ -116,4 +117,14 @@ it('lets only the panel and the plugin configuration change the account fields a
   await save({ secretFile: '/run/secrets/vault', pollSeconds: 30 }, 'tool')
   await save({ secretFile: '/run/secrets/other', pollSeconds: 30 }, 'panel')
   expect(h.runtime.store.settings().sources.vault!.config).toEqual({ secretFile: '/run/secrets/other', pollSeconds: 30 })
+})
+
+it('counts a change of the agent login or user ID as a setup change, and a stored block without them as unchanged', () => {
+  const github = (config: Record<string, unknown>) => SettingsSchema.parse({ sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh', ...config } } } })
+  const stored = github({})
+  expect(setupChanged(stored, github({ login: '', userId: '' }))).toBe(false)
+  expect(setupChanged(stored, github({ login: 'my-app[bot]' }))).toBe(true)
+  expect(setupChanged(stored, github({ userId: '1' }))).toBe(true)
+  expect(setupChanged(github({ login: 'my-app[bot]', userId: '1' }), github({ login: 'my-app[bot]', userId: '2' }))).toBe(true)
+  expect(setupChanged(stored, github({ notifications: false }))).toBe(false)
 })

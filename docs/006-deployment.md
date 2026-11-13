@@ -52,7 +52,7 @@ The agent can act as a GitHub App's bot account through an installation token th
 
 | Key | Example | Effect |
 | --- | --- | --- |
-| `login` | `my-app[bot]` | The agent's login; setup no longer reads `gh api user`. A login ending in `[bot]` skips the push check: the App installation's permissions decide. |
+| `login` | `my-app[bot]` | The agent's login. A login ending in `[bot]` is taken without reading `gh api user` and skips the push check: the App installation's permissions decide. Any other login must match the account `gh api user` reports. |
 | `userId` | `"41898282"` | The bot account's user ID, from `gh api 'users/my-app[bot]' --jq .id`. Set it together with `login`. Commits use `<userId>+<login>@users.noreply.github.com`. |
 | `notifications` | `false` | Skips reading notifications. Switch on `observeIssues`, `observePulls` and `observeComments` so requests still arrive. |
 
@@ -181,7 +181,7 @@ A deployment that keeps its configuration in files can manage settings from the 
     managed:
       sources:
         github: { config: { repository: acme/widgets, cli: /usr/local/bin/gh-agent, observeIssues: false } }
-        # As a GitHub App: { config: { ..., login: "my-app[bot]", userId: 41898282, notifications: false, observeIssues: true, observePulls: true, observeComments: true } }
+        # As a GitHub App: { config: { ..., login: "my-app[bot]", userId: "41898282", notifications: false, observeIssues: true, observePulls: true, observeComments: true } }
       policy:
         sources:
           github: { allowed: [{ id: alice }] }

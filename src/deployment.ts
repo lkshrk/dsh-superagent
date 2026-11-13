@@ -11,6 +11,7 @@ import { scrubbedParentEnv, type SubprocessRuntime } from '@deepseek-ai/dsh-subp
 import { commandError } from './infra/commands.ts'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { sameName } from './infra/text.ts'
 import { ManagedSchema, type Managed } from './managed.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -119,10 +120,15 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
   if (!accounts.login !== !accounts.userId) throw new SetupError('agentIdentityIncomplete')
-  // Installation tokens cannot read `user`, so a configured identity replaces the probe.
-  const agent = accounts.login ? { login: accounts.login, id: Number(accounts.userId) } : parsed(GithubUser,
-    await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }))
-  if (!agent) throw new SetupError('agentCliNoAccount')
+  const signedIn = async () => {
+    const user = parsed(GithubUser, await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }))
+    if (!user) throw new SetupError('agentCliNoAccount')
+    return user
+  }
+  // Installation tokens cannot read `user`, so only a bot identity is taken unverified.
+  const configured = accounts.login ? { login: accounts.login, id: Number(accounts.userId) } : undefined
+  const agent = configured && isBot(configured.login) ? configured : await signedIn()
+  if (configured && !sameName(agent.login, configured.login)) throw new SetupError('agentLoginMismatch', { configured: configured.login, account: agent.login })
   // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
   const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
     throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })

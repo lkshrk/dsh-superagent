@@ -87,8 +87,13 @@ describe('setup', () => {
     const needs = (code: string, github: unknown) => expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError('github', code))
     await needs('agentIdentityIncomplete', { repository: 'acme/widgets', cli: app, login: 'my-app[bot]' })
     await needs('agentIdentityIncomplete', { repository: 'acme/widgets', cli: app, userId: '7' })
-    // A configured user account still needs push access.
-    await needs('repositoryReadOnly', { repository: 'acme/widgets', cli: app, login: 'agent-bot', userId: '7' })
+    // A configured user login must be the account the CLI is signed in as, and still needs push access.
+    const user = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh', login: 'agent-bot', userId: '7' }, probe, path)
+    expect(user.github).toMatchObject({ login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' })
+    await expect(resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh', login: 'someone-else', userId: '7' }, probe, path))
+      .rejects.toEqual(setupError('github', 'agentLoginMismatch', { configured: 'someone-else', account: 'Agent-Bot' }))
+    await needs('agentCliSignedOut', { repository: 'acme/widgets', cli: app, login: 'agent-bot', userId: '7' })
+    await needs('repositoryReadOnly', { repository: 'acme/widgets', cli: gh(join(dir, 'bin', 'gh-reader'), 'Agent-Bot', false), login: 'agent-bot', userId: '7' })
     await expect(resolveDeployment(machine(), { repository: 'acme/widgets', cli: app, login: 'my app', userId: 7 }, probe, path)).rejects.toThrow('a GitHub login')
   })
   it('names what setup needs and where it is set', async () => {
