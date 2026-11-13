@@ -143,13 +143,13 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
   // The catalog lists every subagent the Session had; one that ended has no agent.
   const live = (await subagents.listDescendants(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
   if (!live.length) return
+  const failures: unknown[] = []
   // Interrupting, unlike draining the tree, keeps the Session admitting subagents.
-  try { for (const id of live) subagents.interrupt(id, { kind: 'ancestor', agent }) }
-  finally {
-    if (agent.status !== 'idle') cancelled.add(agent)
-    agent.cancel({ kind: 'user' }, { keepInbox })
-    await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
-  }
+  for (const id of live) try { subagents.interrupt(id, { kind: 'ancestor', agent }) } catch (error) { failures.push(error) }
+  if (agent.status !== 'idle') cancelled.add(agent)
+  agent.cancel({ kind: 'user' }, { keepInbox })
+  await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
+  if (failures.length) throw new AggregateError(failures, `Interrupting the subagents of ${agent.id} failed`)
 }
 
 /**
