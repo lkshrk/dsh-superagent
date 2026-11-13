@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -77,11 +77,14 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '),
+    modelRules: executor.modelRules as { label: string; model: typeof executor.model }[] }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
     value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  const editRule = (index: number, next: Partial<typeof value.modelRules[number]>) =>
+    edit({ modelRules: value.modelRules.map((rule, at) => at === index ? { ...rule, ...next } : rule) })
   const prepare = useRef<HTMLTextAreaElement>(null)
   const insert = (key: string) => {
     const field = prepare.current
@@ -96,6 +99,17 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          <Section title={t('executorModelRules')} hint={t('executorModelRulesHint')} action={<Button variant="ghost" size="sm"
+            icon={<Icon name="plus" />} onClick={() => edit({ modelRules: [...value.modelRules, { label: '', model: null }] })}>{t('addRow')}</Button>}>
+            {value.modelRules.map((rule, index) => <div key={index} className="dt-form">
+              <Field label={t('modelRuleLabel')}>
+                <Input value={rule.label} required spellCheck={false} onChange={event => editRule(index, { label: event.target.value })} />
+              </Field>
+              <ModelField id={`dt-worker-rule-${index}`} value={rule.model} onChange={model => editRule(index, { model })} />
+              <Button variant="ghost" size="sm" icon={<Icon name="trash" />} aria-label={t('removeRow', { name: rule.label })}
+                onClick={() => edit({ modelRules: value.modelRules.filter((_, at) => at !== index) })} />
+            </div>)}
+          </Section>
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />

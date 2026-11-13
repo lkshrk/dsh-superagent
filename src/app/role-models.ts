@@ -2,13 +2,19 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { RoleModel } from '../policy.ts'
+import type { RoleModel, Settings } from '../policy.ts'
 
 /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
 export async function resolveRoleModel(ctx: Context, model: RoleModel): Promise<ModelSelection> {
   const value = await ctx.llm.resolveCallConfig({ provider: model.provider, model: model.model,
     ...(model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}) })
   return { provider: value.provider, model: value.model, ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}) }
+}
+
+/** The worker model for a ticket: the first rule naming one of `labels` (case-insensitive), else `executor.model`. */
+export function workerModel(executor: Pick<Settings['executor'], 'model' | 'modelRules'>, labels: unknown): RoleModel | null {
+  const names = new Set((Array.isArray(labels) ? labels : []).filter(label => typeof label === 'string').map(label => label.trim().toLowerCase()))
+  return executor.modelRules.find(rule => names.has(rule.label.toLowerCase()))?.model ?? executor.model
 }
 
 /** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */

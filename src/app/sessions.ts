@@ -13,7 +13,7 @@ import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { RetryHealth } from './retry-health.ts'
-import { initializeRoleModel } from './role-models.ts'
+import { initializeRoleModel, workerModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
@@ -145,8 +145,8 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions when DSH's permission presets are present, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
+  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model (a worker's by its ticket's `labels`), decorates it with prompts/skills/tools, sets `danger-full-access` permissions when DSH's permission presets are present, and renames it to `title`. */
+  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', labels?: unknown): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
@@ -158,7 +158,7 @@ export class Sessions {
     }
     if ('error' in result) throw result.error
     const settings = this.host.store.settings()
-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : workerModel(settings.executor, labels))
     await this.decorate(result.agent)
     const presets = ctx.get('permissionPresets')
     if (presets) presets.set(result.agent.session, 'danger-full-access')

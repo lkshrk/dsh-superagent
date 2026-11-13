@@ -4,7 +4,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { agentEvents, installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { initializeRoleModel } from '../src/app/role-models.ts'
+import { initializeRoleModel, workerModel } from '../src/app/role-models.ts'
+import { Sessions, type SessionsHost } from '../src/app/sessions.ts'
+import { SettingsSchema } from '../src/policy.ts'
 const contexts: Context[] = []
 afterEach(async () => { await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose())); vi.restoreAllMocks() })
 async function fixture() {
@@ -62,4 +64,37 @@ it('inherits the host when unset and fails unavailable routes before recording a
   resolve.mockRejectedValueOnce(new Error('unknown provider'))
   await expect(initializeRoleModel(ctx, agent, { provider: 'unknown', model: 'x' })).rejects.toThrow('unknown provider')
   expect(agent.session.snapshotEvents().some(event => event.type === 'model/selection')).toBe(false)
+})
+
+const sonnet = { provider: 'litellm', model: 'sonnet' }, opus = { provider: 'litellm', model: 'opus' }, fable = { provider: 'litellm', model: 'fable' }
+it.each([
+  ['a matching label', [{ label: 'hard', model: fable }], ['bug', 'hard'], fable],
+  ['a label in another case', [{ label: 'Hard', model: fable }], ['HARD'], fable],
+  ['no labels', [{ label: 'hard', model: fable }], undefined, opus],
+  ['no rules', [], ['hard'], opus],
+  ['the first matching rule', [{ label: 'big', model: sonnet }, { label: 'hard', model: fable }, { label: 'bug', model: sonnet }], ['bug', 'hard'], fable],
+])('picks the worker model by %s', (_name, modelRules, labels, expected) => {
+  expect(workerModel({ model: opus, modelRules }, labels)).toEqual(expected)
+})
+it('falls back to the executor model, or none, for labels that are not a list of names', () => {
+  expect(workerModel({ model: opus, modelRules: [{ label: 'hard', model: fable }] }, 'hard')).toEqual(opus)
+  expect(workerModel({ model: null, modelRules: [{ label: 'hard', model: fable }] }, [1, null])).toBeNull()
+})
+it('seeds a new worker Session with the model of its labels\' rule, and the main Session with the eval model', async () => {
+  const { ctx } = await fixture()
+  const settings = SettingsSchema.parse({ eval: { model: sonnet }, executor: { model: opus, modelRules: [{ label: 'hard', model: fable }] } })
+  const agents = new Map<string, Agent>()
+  ctx.reflect.provide('sessionController', {
+    resolveAgent: async (id: string) => {
+      if (!agents.has(id)) agents.set(id, { ctx, session: Session.create(SessionId(id)) } as Agent)
+      return { agent: agents.get(id)! }
+    },
+    rename: async () => {},
+  })
+  vi.spyOn(Sessions.prototype as unknown as { decorate: () => Promise<void> }, 'decorate').mockResolvedValue()
+  const sessions = new Sessions({ context: ctx, store: { settings: () => settings }, effects: { handle: () => {} }, remoteWorkers: true } as unknown as SessionsHost)
+  const selected = (agent: Agent) => agent.session.snapshotEvents().find(event => event.type === 'model/selection')?.data
+  expect(selected(await sessions.ensure('hard', '/w', 'Hard', 'worker', ['bug', 'Hard']))).toEqual(fable)
+  expect(selected(await sessions.ensure('plain', '/w', 'Plain', 'worker', ['bug']))).toEqual(opus)
+  expect(selected(await sessions.ensure('main', '/w', 'Main', 'orchestrator', ['hard']))).toEqual(sonnet)
 })

@@ -378,7 +378,8 @@ export class DshExecutor implements Executor {
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker')
+            await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker',
+              sourceTrigger(this.host, ticket)?.meta.labels)
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -506,7 +507,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', source?.meta.labels)
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

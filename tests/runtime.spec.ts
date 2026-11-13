@@ -1310,6 +1310,10 @@ it('refuses a settings save with an unknown model or a Source kind that is not i
   const evalBlock = { ...runtime.store.settings().eval, model: { provider: 'nowhere', model: 'x' } }
   expect(await request('PUT', 'settings/eval', { value: evalBlock, revision: runtime.store.blockRevision('eval') }))
     .toMatchObject({ status: 400, body: { code: 'modelUnavailable', values: { block: 'eval', error: 'unknown provider nowhere' } } })
+  vi.mocked(services.llm as { resolveCallConfig: ReturnType<typeof vi.fn> }).resolveCallConfig.mockRejectedValueOnce(new Error('unknown provider nowhere'))
+  const executorBlock = { ...runtime.store.settings().executor, modelRules: [{ label: 'hard', model: { provider: 'nowhere', model: 'x' } }] }
+  expect(await request('PUT', 'settings/executor', { value: executorBlock, revision: runtime.store.blockRevision('executor') }))
+    .toMatchObject({ status: 400, body: { code: 'modelUnavailable', values: { block: 'executor', error: 'unknown provider nowhere' } } })
   const stored = runtime.store.settings()
   runtime.store.saveSettings({ ...stored, sources: { ...stored.sources, slack: { enabled: false, config: {} } } })
   expect(await request('PUT', 'settings/source:slack', { value: { enabled: true, config: {} }, revision: 0 }))

@@ -109,6 +109,9 @@
                   modelSelection: true
                   modelDiscovery: true
                   agentPreset: standard
+                  agentOptions:
+                    provider: litellm
+                    model: anthropic/claude-sonnet
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
