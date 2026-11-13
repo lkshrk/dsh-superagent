@@ -207,6 +207,38 @@ it('lets a worker go on after a passing provider failure, three times, before it
   fail(busy)
   await vi.waitFor(() => expect(latestAssignment(ticket())?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Service Unavailable') }))
 })
+const sandboxLost = () => Object.assign(new Error("the session's sandbox is unavailable"), { name: 'FsError', code: 'FS_IO_ERROR' })
+it('lets a worker go on after its sandbox was lost, and its turn ends as turns do once the sandbox is back', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const agent = h.agents.get(one.sessionId)!
+  const ticket = () => h.runtime.store.tickets.get(one.ticket.id)!
+  const fail = () => { h.ctx.emit('agent/error', { agent, turn: 1, step: 1, error: sandboxLost() } as never) }
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    fail()
+    await vi.advanceTimersByTimeAsync(15_000)
+    fail()
+    await vi.advanceTimersByTimeAsync(30_000)
+  } finally { vi.useRealTimers() }
+  const retries = h.deliveries.mock.calls.map(([call]) => call)
+    .filter(call => call.sessionId === one.sessionId && call.text.includes('Your last turn failed for a passing reason'))
+  expect(retries).toHaveLength(2)
+  expect(retries[0]!.text).toContain("the session's sandbox is unavailable")
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
+  agent.status = 'idle'
+  h.ctx.emit('agent/status', { agent, status: 'idle' } as never)
+  await vi.waitFor(() => expect(latestAssignment(ticket())?.report?.state).toBe('waiting'))
+})
+it('fails the ticket of a worker whose sandbox stays lost after three tries', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const ticket = () => h.runtime.store.tickets.get(one.ticket.id)!
+  const fail = () => { h.ctx.emit('agent/error', { agent: h.agents.get(one.sessionId), turn: 1, step: 1, error: sandboxLost() } as never) }
+  fail(); fail(); fail()
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
+  fail()
+  await vi.waitFor(() => expect(latestAssignment(ticket())?.report)
+    .toMatchObject({ state: 'failed', summary: "FsError: the session's sandbox is unavailable" }))
+})
 describe('a worker that goes on after a passing failure', () => {
   const busy = () => Object.assign(new Error('Service Unavailable'), { status: 503 })
   const told = (sessionId: string) => h.deliveries.mock.calls.map(([call]) => call)
@@ -790,10 +822,12 @@ it('wakes an idle worker for a status request in the slot kept for a person, whi
 })
 it('tells a passing failure of the provider or the network from one that a later try would meet again', () => {
   for (const error of [Object.assign(new Error('x'), { status: 429 }), Object.assign(new Error('x'), { status: 503 }),
-    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com')]) {
+    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com'),
+    sandboxLost(), new Error('Sandbox sb-1 did not become ready'), new Error('SandboxClaim claim-1 did not become ready')]) {
     expect(transient(error)).toBe(true)
   }
-  for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline']) {
+  for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline',
+    Object.assign(new Error('cannot read "a.ts": no such file'), { name: 'FsError', code: 'FS_IO_ERROR' }), new Error("the session's sandbox is unavailable")]) {
     expect(transient(error)).toBe(false)
   }
 })

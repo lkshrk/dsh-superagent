@@ -48,11 +48,18 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
 class PrepareFailed extends Error {}
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
   'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+/** True for dsh-yawn's unreachable-runner FsError or its agent-sandbox wake timeout; the next step wakes or replaces the sandbox. */
+function sandboxLost(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.name === 'FsError' && /\bsandbox is unavailable\b/.test(error.message)) return true
+  return /^Sandbox(?:Claim)? \S+ did not become \w+$/.test(error.message)
+}
 /**
- * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, or a
- * connection that was refused, reset, timed out, or could not resolve its host.
+ * True when an error represents a transient network, model-provider or sandbox failure: an HTTP 408, 429, or 5xx status,
+ * a connection that was refused, reset, timed out, or could not resolve its host, or a lost remote sandbox.
  */
 export function transient(error: unknown): boolean {
+  if (sandboxLost(error)) return true
   const status = (error as { status?: unknown } | undefined)?.status
   if (typeof status === 'number') return status === 408 || status === 429 || status >= 500
   const text = error instanceof Error ? `${error.name} ${error.message} ${String((error as { code?: unknown }).code ?? '')}` : String(error)
@@ -680,7 +687,7 @@ export class DshExecutor implements Executor {
     this.transient.set(key, tries + 1)
     return true
   }
-  /** Schedules a worker turn retry with exponential backoff after a transient provider or network error. */
+  /** Schedules a worker turn retry with exponential backoff after a transient provider, network or sandbox error. */
   private resumeAfter(ticketId: string, assignmentId: string, error: unknown): void {
     const tries = this.transient.get(assignmentId)!
     const text = `Your last turn failed for a passing reason (${String(error).slice(0, 200)}). Continue the assignment where it stopped.`
