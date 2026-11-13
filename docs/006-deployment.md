@@ -314,8 +314,9 @@ Configure the entry in the profile's `cordis.patch.yml`:
 
 - Each Ticket works in one GitHub repository: the one its origin Trigger came from, else the one the main Session names when it accepts a request from elsewhere, such as a chat, else the primary. Every Ticket accepted from now on records it; `DSH_SUPERAGENT_GITHUB_REPOSITORY` gives it.
 - A new worker Session starts in the dsh-yawn repository Workspace of `https://github.com/<owner>/<name>`, which dsh-superagent registers through the sandbox manager when needed. dsh-yawn clones that repository into the Session's sandbox and gives it that Workspace's secrets, such as a `GITHUB_TOKEN` scoped to it. Register those secrets under the same URL, without `.git`.
-- Every Ticket of a repository shares its Workspace's directory as `DSH_SUPERAGENT_DIR`; each Session still has its own sandbox. A Session created before keeps its directory and sandbox.
-- A Workspace dsh-yawn cannot create fails the launch, as a failed prepare command does. Without dsh-yawn's sandbox manager, Tickets keep their own directories.
+- Every Ticket of a repository shares its Workspace's directory as `DSH_SUPERAGENT_DIR`, so nothing belonging to one Ticket alone belongs there; each Session still has its own sandbox and clone. A Session created before keeps its directory and sandbox.
+- A Workspace dsh-yawn cannot create fails the launch, as a failed prepare command does; a passing network error is retried. Without dsh-yawn's sandbox manager, the flag fails every launch of a Ticket that records a repository. Launches of one repository wait for one Workspace creation.
+- A Ticket whose repository was taken off the GitHub Source's list fails its next launch.
 
 `authenticatedPanel: true`:
 

@@ -5,7 +5,7 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
-import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
+import { commentTrigger, githubAddress, githubChannel, issueTrigger, localId, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
 import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
@@ -993,6 +993,17 @@ describe('github source', () => {
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { outcome: 'merged' } })
     expect(claimPull(h, 't1', openPull(30))).toBe('Ticket ended because its PR was closed')
     h.store.close()
+  })
+  it('spells an additional repository\'s IDs and keys in lower case, so a change of case in its name keeps them, and leaves the primary\'s alone', () => {
+    for (const name of ['Other/Tools', 'other/tools']) {
+      expect(localId(4, name)).toBe('other/tools#4')
+      expect([KV.github.cursor(localId(4, name)), KV.github.ci(localId(4, name)), KV.github.stream(localId('issues', name)), KV.github.since(name), KV.github.branchCi(name)])
+        .toEqual(['github-cursor:other/tools#4', 'github-ci:other/tools#4', 'github-stream:other/tools#issues', 'github-since:other/tools', 'github-branch-ci:other/tools'])
+      expect(issueTrigger({ number: 4, title: 'x', body: '', user: { login: 'carol' }, created_at: '2026-09-01T00:00:00Z', html_url: '' }, 'agent-bot', name).threads)
+        .toEqual([{ source: 'github', id: 'other/tools#4' }])
+    }
+    expect([localId(4), KV.github.cursor(localId(4)), KV.github.stream('issues'), KV.github.since(), KV.github.branchCi()])
+      .toEqual(['4', 'github-cursor:4', 'github-stream:issues', 'github-since', 'github-branch-ci'])
   })
   it('names the ticket\'s repository to its worker, and hears a listed repository whatever the case of its name', () => {
     const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools'] })

@@ -1,10 +1,13 @@
 /** A deployment whose Sessions run their tools in remote sandboxes (`remoteWorkers`), such as under dsh-yawn. */
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { latestAssignment, type Ticket } from '../src/core/index.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
+import { testDeployment } from './fixtures/deployment.ts'
+import { commentTrigger } from '../src/sources/github-trigger.ts'
+import type { Deployment } from '../src/deployment.ts'
 
 let h: Host | undefined
 afterEach(async () => { await h?.stop(); h = undefined })
@@ -36,10 +39,12 @@ it('starts a worker in its ticket directory without running the prepare command'
 })
 
 describe('repository Workspaces', () => {
+  const anchors = mkdtempSync(join(tmpdir(), 'anchors-'))
+  afterAll(() => { rmSync(anchors, { recursive: true, force: true }) })
   /** dsh-yawn's sandbox manager: one anchor directory per repository URL. */
   const sandboxManager = (fail = false) => ({ createRepositoryWorkspace: vi.fn(async (url: string) => {
     if (fail) throw new Error('repository workspaces require the dsh Web profile')
-    const anchor = join(tmpdir(), `anchor-${url.replace(/\W+/g, '-')}`)
+    const anchor = join(anchors, url.replace(/\W+/g, '-'))
     mkdirSync(anchor, { recursive: true })
     return anchor
   }) })
@@ -61,31 +66,91 @@ describe('repository Workspaces', () => {
     const primary = await accept(h, '2')
     const again = await accept(h, '3', { repository: 'other/tools' })
     expect(manager.createRepositoryWorkspace.mock.calls).toEqual([['https://github.com/other/tools'], ['https://github.com/acme/widgets'], ['https://github.com/other/tools']])
-    expect(tools.execution).toMatchObject({ repository: 'other/tools', directory: join(tmpdir(), 'anchor-https-github-com-other-tools') })
+    expect(tools.execution).toMatchObject({ repository: 'other/tools', directory: join(anchors, 'https-github-com-other-tools') })
     expect(again.execution!.directory).toBe(tools.execution!.directory)
-    expect(primary.execution).toMatchObject({ repository: 'acme/widgets', directory: join(tmpdir(), 'anchor-https-github-com-acme-widgets') })
+    expect(primary.execution).toMatchObject({ repository: 'acme/widgets', directory: join(anchors, 'https-github-com-acme-widgets') })
     const workspaces = h.controller.create.mock.calls.map(([request]) => request as { sessionId: string; workspaceId?: string })
     expect(workspaces.find(request => request.sessionId === `worker-${tools.id}`)?.workspaceId).toBe(tools.execution!.directory)
     expect(variable(h, tools, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('other/tools')
     expect(variable(h, primary, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('acme/widgets')
     await expect(accept(h, '4', { repository: 'someone/else' })).rejects.toThrow('someone/else is not a repository of the GitHub Source')
   })
-  it('keeps the ticket\'s own directory when repository Workspaces are off or dsh-yawn offers none, and fails a launch whose Workspace it cannot create', async () => {
+  const failure = (host: Host, ticket: Ticket) => host.runtime.store.tickets.get(ticket.id)!.assignments.at(-1)?.report
+  const machineOf = (host: Host) => host.runtime.machine as { repositoryWorkspaces: boolean }
+  it('keeps the ticket\'s own directory when repository Workspaces are off, and fails a launch that cannot have its Workspace', async () => {
     const manager = sandboxManager()
     h = await startRuntime(undefined, { machine: { remoteWorkers: true }, without: ['permissionPresets'], services: { sandboxManager: manager }, repositories: ['other/tools'] })
     const off = await accept(h, '1', { repository: 'other/tools' })
     expect(off.execution).toMatchObject({ repository: 'other/tools', directory: expect.stringMatching(/\/work\/fix-1-/) })
     expect(manager.createRepositoryWorkspace).not.toHaveBeenCalled()
+    // A Session that started before the flag was switched on keeps its directory and sandbox.
+    machineOf(h).repositoryWorkspaces = true
+    await h.runTool(`worker-${off.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+    await h.runtime.engine.retryTicket(off.id)
+    await h.runtime.idle()
+    expect(manager.createRepositoryWorkspace).not.toHaveBeenCalled()
+    expect(h.runtime.store.tickets.get(off.id)!.execution).toEqual(off.execution)
     await h.stop()
     h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'] })
-    expect((await accept(h, '1')).execution!.directory).toMatch(/\/work\/fix-1-/)
+    const none = await accept(h, '1')
+    await h.runtime.idle()
+    expect(failure(h, none)).toMatchObject({ state: 'failed', summary: expect.stringContaining('this host has no dsh-yawn sandbox manager') })
+    expect(h.agents.has(`worker-${none.id}`)).toBe(false)
     await h.stop()
     h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'], services: { sandboxManager: sandboxManager(true) } })
     const failed = await accept(h, '1')
     await h.runtime.idle()
-    expect(h.runtime.store.tickets.get(failed.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed',
-      summary: expect.stringContaining('The dsh-yawn Workspace of https://github.com/acme/widgets could not be created: repository workspaces require the dsh Web profile') }) })
+    expect(failure(h, failed)).toMatchObject({ state: 'failed',
+      summary: expect.stringContaining('The dsh-yawn Workspace of https://github.com/acme/widgets could not be created: repository workspaces require the dsh Web profile') })
     expect(h.agents.has(`worker-${failed.id}`)).toBe(false)
+  })
+  it('creates one Workspace for launches of one repository at once, and leaves a passing network error to the launch\'s retry', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const calls: string[] = []
+    let refusals = 1
+    const manager = { createRepositoryWorkspace: vi.fn(async (url: string) => {
+      calls.push(url)
+      await held
+      if (refusals-- > 0) throw new Error('connect ECONNRESET 10.0.0.1:443')
+      const anchor = join(anchors, url.replace(/\W+/g, '-'))
+      mkdirSync(anchor, { recursive: true })
+      return anchor
+    }) }
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true, repositoryWorkspaces: true }, without: ['permissionPresets'], services: { sandboxManager: manager } })
+    const triggers = [feishu('1', '@bot 修一下回归'), feishu('2', '@bot 修一下标题')]
+    for (const trigger of triggers) h.runtime.receive(trigger)
+    await h.runtime.idle()
+    await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: triggers.map((trigger, i) =>
+      ({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${i}`, acknowledgement: '收到。' })) })
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    release()
+    await vi.waitFor(() => expect(h!.runtime.store.tickets.list().every(ticket => ticket.assignments.at(-1)?.state === 'pending')).toBe(true))
+    // Both launches waited for the one creation, which a reset connection failed; neither ticket failed for it.
+    expect(calls).toHaveLength(1)
+    expect(h.runtime.store.tickets.list().map(ticket => ticket.assignments.at(-1)?.report)).toEqual([undefined, undefined])
+  })
+  it('works where a GitHub Trigger came from, and fails a launch of a ticket whose repository was taken off the list', async () => {
+    h = await startRuntime(undefined, { machine: { remoteWorkers: true }, without: ['permissionPresets'], repositories: ['other/tools'] })
+    const comment = (id: number, repository?: string) => commentTrigger({ id, body: '@agent-bot fix the margin', user: { login: 'alice', type: 'User' },
+      created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/${repository ?? 'acme/widgets'}/issues/${id}#issuecomment-${id}` },
+    { number: id, isPr: false, repository }, 'conversation', 'agent-bot')
+    for (const trigger of [comment(7), comment(8, 'other/tools')]) h.runtime.receive(trigger)
+    await h.runtime.idle()
+    await expect(h.route({ kind: 'accept', trigger_id: comment(7).id, title: 'fix', worktree_name: 'fix-margin', acknowledgement: 'On it.', repository: 'other/tools' }))
+      .rejects.toThrow('The trigger comes from acme/widgets, so its ticket works there')
+    await h.route({ kind: 'accept', trigger_id: comment(7).id, title: 'fix', worktree_name: 'fix-margin', acknowledgement: 'On it.', repository: 'ACME/widgets' })
+    await h.route({ kind: 'accept', trigger_id: comment(8, 'other/tools').id, title: 'fix', worktree_name: 'fix-tools', acknowledgement: 'On it.' })
+    await h.runtime.idle()
+    const [primary, tools] = ['fix-margin', 'fix-tools'].map(name => h!.runtime.store.tickets.list().find(ticket => ticket.execution?.name.startsWith(name))!)
+    expect(primary!.execution!.repository).toBe('acme/widgets')
+    expect(tools!.execution!.repository).toBe('other/tools')
+    const setup = (h.runtime as unknown as { setup: { deployment: Deployment } }).setup
+    vi.spyOn(setup, 'deployment', 'get').mockReturnValue(testDeployment({ repositories: ['acme/widgets'] }))
+    await h.runTool(`worker-${tools!.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+    await h.runtime.engine.retryTicket(tools!.id)
+    await h.runtime.idle()
+    expect(failure(h, tools!)).toMatchObject({ state: 'failed', summary: expect.stringContaining('other/tools is no longer a repository of the GitHub Source') })
   })
 })
 

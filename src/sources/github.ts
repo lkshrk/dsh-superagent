@@ -77,13 +77,14 @@ export const githubKind: SourceKind<GithubConfig> = {
   channel: { send: sendGithub, link: githubLink },
   threadContext: githubThreadContext,
   // `#12` or `12` names Thread 12 of the primary repository, and `owner/name#12` or a page of an Issue or PR names it in its repository.
-  find: (query, config) => {
+  find: (query, config, deployment) => {
     const text = query.trim()
     const named = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/.exec(text) ?? /github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/(\d+)/.exec(text)
     const number = named?.[2] ?? /^#?(\d+)$/.exec(text)?.[1]
     if (!number) return { threads: [], terms: [] }
     // Without a primary repository set, a page of any repository names the Thread by its number, as before there were several.
-    const primary = !named || !config.repository || sameName(named[1]!, config.repository)
+    const names = [deployment?.repository, config.repository].filter(name => !!name) as string[]
+    const primary = !named || !names.length || names.some(name => sameName(named[1]!, name))
     return { threads: [`${SOURCE}:${primary ? number : localId(number, named[1])}`], terms: [] }
   },
   policy: {

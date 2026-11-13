@@ -121,6 +121,12 @@ describe('Source registry', () => {
     expect(several.find('https://github.com/Acme/Gadgets/issues/7')).toEqual({ threads: ['github:acme/gadgets#7'], terms: [] })
     expect(several.find('ACME/widgets#7')).toEqual({ threads: ['github:7'], terms: [] })
     expect(several.find('https://github.com/acme/widgets/pull/7')).toEqual({ threads: ['github:7'], terms: [] })
+    // GitHub's name for the primary, as setup read it, names its Threads too.
+    const renamed = new SourceRegistry(() => SettingsSchema.parse({ sources: { github: { enabled: true, config: { repository: 'acme/old-widgets' } } } }),
+      undefined, undefined, () => testDeployment())
+    renamed.register(githubKind)
+    expect(renamed.find('https://github.com/acme/widgets/issues/7')).toEqual({ threads: ['github:7'], terms: [] })
+    expect(renamed.find('acme/old-widgets#7')).toEqual({ threads: ['github:7'], terms: [] })
     expect(feishuKind.policy!.unnamed).toEqual({ person: { zh: '飞书用户', en: 'Feishu user' }, bot: { zh: '飞书机器人', en: 'Feishu bot' } })
   })
   it('refuses a second registration of one kind and forgets a kind after its disposer runs', () => {

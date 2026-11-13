@@ -116,7 +116,7 @@ export class Runtime extends Service implements SourceHost {
         const managed = machine.managed
         if (managed?.sources?.[kind.kind] || managed?.policy?.sources?.[kind.kind]) void this.ready?.then(() => applyManagedSource(this.managedHost(), managed, kind.kind))
         return () => {}
-      })
+      }, () => setup.configured() ? setup.deployment : undefined)
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)

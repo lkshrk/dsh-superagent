@@ -227,6 +227,8 @@ export class DshExecutor implements Executor {
   private readonly personal = new Map<string, string>()
   /** The timers of workers that go on after a passing failure, which dispose clears. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  /** Repository Workspaces dsh-yawn is creating, by URL, which concurrent launches of one repository wait for together. */
+  private readonly workspaces = new Map<string, Promise<string>>()
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
@@ -244,44 +246,60 @@ export class DshExecutor implements Executor {
     return { ...ticket, execution: { ...execution, ...repository ? { repository } : {} } }
   }
   /**
-   * The repository a new ticket works in: the one its origin Trigger came from, else the one the accept names, else the primary.
-   * @throws for a repository the GitHub Source does not list, which refuses the accept.
+   * The repository a new ticket works in: the one its origin Trigger came from (a GitHub Trigger without one is the
+   * primary's), else the one the accept names, else the primary.
+   * @throws for a repository the GitHub Source does not list, or an accept naming another repository than its Trigger's, which refuses the accept.
    */
   private repositoryOf(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): string | undefined {
     const deployment = this.host.repositories()
     if (!deployment) return undefined
-    const meta = this.host.store.triggers.get(ticket.origin.triggerId)?.meta
-    const named = typeof meta?.repository === 'string' && meta.repository ? meta.repository : outcome.repository
+    const origin = this.host.store.triggers.get(ticket.origin.triggerId)
+    const fromTrigger = typeof origin?.meta.repository === 'string' && origin.meta.repository ? origin.meta.repository
+      : origin?.source === 'github' ? deployment.repository : undefined
+    if (fromTrigger && outcome.repository && !sameName(fromTrigger, outcome.repository)) {
+      throw new Error(`The trigger comes from ${fromTrigger}, so its ticket works there; omit repository or name ${fromTrigger}`)
+    }
+    const named = fromTrigger ?? outcome.repository
     if (!named) return deployment.repository
     const known = deployment.repositories.find(repository => sameName(repository, named))
     if (!known) throw new Error(`${named} is not a repository of the GitHub Source`)
     return known
   }
   /**
-   * The directory a ticket's worker Session starts in. With repository Workspaces under dsh-yawn, a new Session starts in the
-   * Workspace anchor of the ticket's repository, which all its tickets share, so dsh-yawn's sandbox clones that repository.
-   * @throws PrepareFailed when dsh-yawn cannot create the Workspace.
+   * The directory a ticket's worker Session starts in, and whether it is a repository's shared dsh-yawn Workspace. With
+   * repository Workspaces, a new Session starts in the Workspace anchor of the ticket's repository, so dsh-yawn's sandbox
+   * clones that repository; an existing Session keeps its directory.
+   * @throws PrepareFailed when the ticket's repository is no longer listed, or dsh-yawn cannot create the Workspace for a reason a retry would not cure.
    */
-  private async workspaceOf(ticket: Ticket): Promise<string> {
+  private async workspaceOf(ticket: Ticket): Promise<{ directory: string; shared: boolean }> {
     const execution = ticket.execution
+    const own = { directory: execution?.directory ?? '', shared: !!execution?.shared }
+    const repositories = this.host.repositories()
+    if (execution?.repository && repositories && !repositories.repositories.some(name => sameName(name, execution.repository!))) {
+      throw new PrepareFailed(`${execution.repository} is no longer a repository of the GitHub Source`)
+    }
     const { machine, context } = this.host
-    if (!execution?.repository || !machine.remoteWorkers || !machine.repositoryWorkspaces) return execution?.directory ?? ''
+    if (!execution?.repository || !machine.remoteWorkers || !machine.repositoryWorkspaces) return own
     // A Session keeps the directory it was created in, and with it its sandbox's repository.
-    if (context.agents.get(workerSessionId(ticket.id) as SessionId)) return execution.directory
+    if (context.agents.get(workerSessionId(ticket.id) as SessionId)) return own
     const manager = context.get('sandboxManager') as { createRepositoryWorkspace?(url: string): Promise<string> } | undefined
-    if (!manager?.createRepositoryWorkspace) return execution.directory
+    if (!manager?.createRepositoryWorkspace) throw new PrepareFailed('repositoryWorkspaces is on, but this host has no dsh-yawn sandbox manager to create repository Workspaces')
     // The URL form dsh-octo-sts registers Workspace secrets under, so both name one Workspace.
     const url = `https://github.com/${execution.repository}`
-    const anchor = await manager.createRepositoryWorkspace(url).catch((error: unknown) => {
+    let creating = this.workspaces.get(url)
+    if (!creating) {
+      creating = manager.createRepositoryWorkspace(url).finally(() => { this.workspaces.delete(url) })
+      this.workspaces.set(url, creating)
+    }
+    const anchor = await creating.catch((error: unknown) => {
+      if (transient(error)) throw error
       throw new PrepareFailed(`The dsh-yawn Workspace of ${url} could not be created: ${error instanceof Error ? error.message : String(error)}`)
     })
-    if (anchor !== execution.directory) {
-      this.host.store.atomic(() => {
-        const stored = this.host.store.tickets.get(ticket.id)
-        if (stored?.execution) this.host.store.tickets.save({ ...stored, execution: { ...stored.execution, directory: anchor } })
-      })
-    }
-    return anchor
+    this.host.store.atomic(() => {
+      const stored = this.host.store.tickets.get(ticket.id)
+      if (stored?.execution) this.host.store.tickets.save({ ...stored, execution: { ...stored.execution, directory: anchor, shared: true } })
+    })
+    return { directory: anchor, shared: true }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -289,8 +307,7 @@ export class DshExecutor implements Executor {
    * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
    * @throws PrepareFailed with the command's output when the prepare command fails.
    */
-  private async prepareDirectory(ticket: Ticket): Promise<void> {
-    const directory = ticket.execution?.directory ?? ''
+  private async prepareDirectory(ticket: Ticket, directory: string): Promise<void> {
     await mkdir(dirname(directory), { recursive: true })
     // The worker's sandbox clones the repository itself; this directory only anchors its Session.
     if (this.host.machine.remoteWorkers) { await mkdir(directory, { recursive: true }); return }
@@ -477,11 +494,12 @@ export class DshExecutor implements Executor {
     }
     const source = sourceTrigger(this.host, ticket)
     if (!current()) return
-    const workspace = await this.workspaceOf(ticket)
+    const { directory: workspace, shared } = await this.workspaceOf(ticket)
     if (!current()) return
     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
-    if (!await stat(workspace).then(() => true, () => false)) {
-      await this.prepareDirectory(ticket)
+    // A repository's shared Workspace is dsh-yawn's, never made here.
+    if (!shared && !await stat(workspace).then(() => true, () => false)) {
+      await this.prepareDirectory(ticket, workspace)
       if (!current()) return
     }
     if (!current()) return

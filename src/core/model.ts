@@ -312,8 +312,11 @@ export interface Ticket {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-/** What the Executor chose for a ticket; `repository` is the GitHub repository it works in, absent on tickets that predate it. */
-export interface Execution { name: string; directory: string; assignment: string; repository?: string }
+/**
+ * What the Executor chose for a ticket; `repository` is the GitHub repository it works in, absent on tickets that predate it,
+ * and `shared` marks a `directory` that is its repository's Workspace, which other tickets share.
+ */
+export interface Execution { name: string; directory: string; assignment: string; repository?: string; shared?: boolean }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

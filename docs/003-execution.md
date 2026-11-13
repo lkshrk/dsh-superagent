@@ -66,7 +66,7 @@ The prepare command and Executor instructions receive the same execution variabl
 
 | Variable | Registered by | Value |
 | --- | --- | --- |
-| `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
+| `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id. With `repositoryWorkspaces`, the directory is the repository's dsh-yawn Workspace, which its Tickets share; each worker works in its own sandbox's clone |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The Ticket's repository, `owner/name`: the one its origin Trigger came from, else the one its accept named, else the Source's primary repository |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |

@@ -86,8 +86,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
-        const repository = pullRepository(host.github.deployment, args.pr_repository ?? ticketRepository(current, host.github.triggers.get(current.origin.triggerId)))
-        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal, repository) : undefined
+        const repository = () => pullRepository(host.github.deployment, args.pr_repository ?? ticketRepository(current, host.github.triggers.get(current.origin.triggerId)))
+        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal, repository()) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)
