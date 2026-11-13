@@ -18,6 +18,9 @@ import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
+import type { Commands } from '../infra/commands.ts'
+import { readGithub } from '../sources/github-read.ts'
+import { qualifier, SOURCE as GITHUB } from '../sources/github-trigger.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
 const now = (): string => new Date().toISOString()
@@ -70,6 +73,8 @@ export interface ExecutorHost {
   readonly health: HealthEntry
   readonly machine: Pick<Machine, 'stateDir' | 'remoteWorkers' | 'repositoryWorkspaces'>
   readonly lifetime: AbortSignal
+  /** GitHub CLI commands, through which a GitHub ticket's current labels are read when its worker Session is created. */
+  readonly commands: Pick<Commands, 'withSignal'>
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
   readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
   closing(): boolean
@@ -86,6 +91,22 @@ export interface ExecutorHost {
 /** Looks up a ticket's origin trigger in Store. */
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
   host.store.triggers.get(ticket.origin.triggerId)
+const LABELS_READ_MS = 5000
+/**
+ * The labels that pick a ticket's worker model: a GitHub Issue's or PR's current labels, read from GitHub, or the origin
+ * trigger's `meta.labels` when the ticket did not come from GitHub or the read fails or exceeds `LABELS_READ_MS`.
+ */
+export async function ticketLabels(host: Pick<ExecutorHost, 'store' | 'commands'>, ticket: Ticket): Promise<unknown> {
+  const source = sourceTrigger(host, ticket)
+  const number = source?.meta.number
+  if (source?.source !== GITHUB || typeof number !== 'number') return source?.meta.labels
+  const repository = ticket.execution?.repository ?? qualifier(source.meta)
+  const resource = `github/${repository ? `${repository}/` : ''}${source.meta.isPr ? 'pulls' : 'issues'}/${number}`
+  try {
+    const item = await readGithub(host.commands.withSignal(AbortSignal.timeout(LABELS_READ_MS)), resource) as { labels?: unknown }
+    return item.labels ?? []
+  } catch { return source.meta.labels }
+}
 
 /**
  * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
@@ -379,7 +400,7 @@ export class DshExecutor implements Executor {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, (await this.workspaceOf(ticket)).directory, ticket.title, 'worker',
-              sourceTrigger(this.host, ticket)?.meta.labels)
+              await this.labels(ticket, sessionId))
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -488,6 +509,11 @@ export class DshExecutor implements Executor {
     })
   }
   private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
+  /** The labels a new worker Session's model is picked by; a running Session keeps its model, so nothing is read for it. */
+  private async labels(ticket: Ticket, sessionId: string): Promise<unknown> {
+    if (!this.host.store.settings().executor.modelRules.length || this.host.context.agents.get(sessionId as SessionId)) return undefined
+    return ticketLabels(this.host, ticket)
+  }
   private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
     const current = () => {
       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
@@ -507,7 +533,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', source?.meta.labels)
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', await this.labels(ticket, sessionId))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

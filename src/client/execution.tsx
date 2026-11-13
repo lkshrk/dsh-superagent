@@ -105,7 +105,7 @@ export function ExecutionSettings() {
               <Field label={t('modelRuleLabel')}>
                 <Input value={rule.label} required spellCheck={false} onChange={event => editRule(index, { label: event.target.value })} />
               </Field>
-              <ModelField id={`dt-worker-rule-${index}`} value={rule.model} onChange={model => editRule(index, { model })} />
+              <ModelField id={`dt-worker-rule-${index}`} value={rule.model} required onChange={model => editRule(index, { model })} />
               <Button variant="ghost" size="sm" icon={<Icon name="trash" />} aria-label={t('removeRow', { name: rule.label })}
                 onClick={() => edit({ modelRules: value.modelRules.filter((_, at) => at !== index) })} />
             </div>)}

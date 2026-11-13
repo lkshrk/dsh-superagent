@@ -5,7 +5,7 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
-import { commentTrigger, githubAddress, githubChannel, issueTrigger, localId, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
+import { commentTrigger, githubAddress, githubChannel, issueTrigger, localId, pullTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
 import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
@@ -722,13 +722,13 @@ describe('github source', () => {
   it('takes in the description of a notified PR someone opened since the cursor, as a new PR\'s stream does', async () => {
     const h = host()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')
-    const pr = { ...openPull(9), body: '@agent-bot please review', created_at: '2026-09-09T00:00:00Z' }
+    const pr = { ...openPull(9), body: '@agent-bot please review', created_at: '2026-09-09T00:00:00Z', labels: [{ name: 'hard' }] }
     github(h, { notifications: [notification(9, 'pulls')], 'pulls/9': pr })
     await pollRound(h)
     const opened = h.receive.mock.calls.map(([trigger]) => trigger).filter(trigger => trigger.meta.kind === 'pull')
     const id = issueTrigger({ ...pr, id: 9 } as GithubIssue, 'agent-bot').id
     expect(opened).toEqual([expect.objectContaining({ id, addressed: 'mention', actor: { source: 'github', id: 'carol' },
-      meta: expect.objectContaining({ number: 9, isPr: true, prAuthor: 'carol' }) })])
+      meta: expect.objectContaining({ number: 9, isPr: true, prAuthor: 'carol', labels: ['hard'] }) })])
     // The agent's own PR, and one opened before the cursor, bring no description.
     h.receive.mockClear()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')
@@ -1004,6 +1004,15 @@ describe('github source', () => {
     }
     expect([localId(4), KV.github.cursor(localId(4)), KV.github.stream('issues'), KV.github.since(), KV.github.branchCi()])
       .toEqual(['4', 'github-cursor:4', 'github-stream:issues', 'github-since', 'github-branch-ci'])
+  })
+  it('carries an opened Issue\'s or PR\'s label names in its Trigger meta, and none when it has no labels', () => {
+    const opened = { number: 4, title: 'x', body: '', user: { login: 'carol' }, created_at: '2026-09-01T00:00:00Z', html_url: '' }
+    const labels = [{ name: 'hard', color: 'f00' }, { name: 'bug' }]
+    expect(issueTrigger({ ...opened, labels }, 'agent-bot').meta).toEqual({ number: 4, isPr: false, kind: 'issue', labels: ['hard', 'bug'] })
+    expect(pullTrigger({ ...opened, labels }, 'agent-bot', 'other/tools').meta)
+      .toEqual({ number: 4, isPr: true, repository: 'other/tools', prAuthor: 'carol', kind: 'pull', labels: ['hard', 'bug'] })
+    expect(issueTrigger({ ...opened, labels: [] }, 'agent-bot').meta).not.toHaveProperty('labels')
+    expect(pullTrigger(opened, 'agent-bot').meta).not.toHaveProperty('labels')
   })
   it('names the ticket\'s repository to its worker, and hears a listed repository whatever the case of its name', () => {
     const deployment = testDeployment({ repositories: ['acme/widgets', 'other/tools'] })
@@ -1321,12 +1330,12 @@ describe('observing the GitHub repository', () => {
     h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0), pulls: at(0) } })
     const calls = repository(h, { issues: [issue(3, { created_at: at(-24), updated_at: at(1) }),
       issue(4, { created_at: at(2), updated_at: at(2) }),
-      { ...issue(5, { created_at: at(3), updated_at: at(3) }), pull_request: { url: 'x' } },
+      { ...issue(5, { created_at: at(3), updated_at: at(3) }), pull_request: { url: 'x' }, labels: [{ name: 'hard' }] },
       issue(6, { created_at: at(4), updated_at: at(4), user: { login: 'agent-bot', type: 'User' } })] })
     await pollRound(h)
     // #3 was opened before the Source observed Issues, and #6 is the agent's own.
-    expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.id]))
-      .toEqual([[4, 'issue', issueTrigger(issue(4), 'agent-bot').id], [5, 'pull', issueTrigger(issue(5), 'agent-bot').id]])
+    expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.id, trigger.meta.labels]))
+      .toEqual([[4, 'issue', issueTrigger(issue(4), 'agent-bot').id, undefined], [5, 'pull', issueTrigger(issue(5), 'agent-bot').id, ['hard']]])
     const started = { issues: at(0), pulls: at(0) }
     expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started })
     const list = () => calls.filter(args => args[1]!.startsWith('repos/acme/widgets/issues?'))

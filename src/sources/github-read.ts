@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
 import { validItems, type Commands, type Tally } from '../infra/commands.ts'
-import { CommentSchema, IssueSchema, isHumanLogin, qualifier, reviewPlace, type GithubComment } from './github-trigger.ts'
+import { CommentSchema, IssueSchema, isHumanLogin, labelNames, qualifier, reviewPlace, type GithubComment } from './github-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
 const CheckSchema = z.looseObject({ name: z.string(), status: z.string(), conclusion: z.string().nullable() })
@@ -79,7 +79,7 @@ function githubMessage(item: GithubComment, text: string, id: string): ContextMe
 const reviewText = (review: GithubComment): string =>
   [review.state && review.state !== 'COMMENTED' ? review.state : '', review.body ?? ''].filter(Boolean).join('\n\n')
 const DescriptionSchema = IssueSchema.extend({
-  labels: z.array(z.looseObject({ name: z.string() })).nullish(), draft: z.boolean().nullish(), merged: z.boolean().nullish(),
+  draft: z.boolean().nullish(), merged: z.boolean().nullish(),
   head: z.looseObject({ ref: z.string() }).nullish(), base: z.looseObject({ ref: z.string() }).nullish(),
 })
 async function reviewThread(commands: Commands, number: number, comment: number, tally?: Tally): Promise<GithubComment[]> {
@@ -131,9 +131,8 @@ export async function readGithub(host: Commands, requested: string): Promise<unk
   if (!section) {
     const item = await commands.api(DescriptionSchema, path)
     const branches = item.head && item.base ? { head: item.head.ref, base: item.base.ref } : {}
-    const labels = item.labels?.length ? { labels: item.labels.map(label => label.name) } : {}
     return { number: item.number, title: item.title, state: item.state, ...item.merged ? { merged: true } : {},
-      ...item.draft ? { draft: true } : {}, ...branches, ...labels, ...githubMessage(item, item.body ?? '', String(item.number)) }
+      ...item.draft ? { draft: true } : {}, ...branches, ...labelNames(item.labels), ...githubMessage(item, item.body ?? '', String(item.number)) }
   }
   const listed = await commands.api(z.array(z.unknown()), `${path}/${section}?per_page=20&page=${page}`)
   const tally = { skipped: 0 }

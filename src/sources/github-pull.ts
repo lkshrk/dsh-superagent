@@ -4,11 +4,11 @@ import { key, liveTicket, type Follow, type OutboundMessage, type ThreadFact, ty
 import type { Deployment } from '../deployment.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
-import { githubPage, localId, parseLocal, qualifier, SOURCE, UserSchema } from './github-trigger.ts'
+import { githubPage, LabelsSchema, localId, parseLocal, qualifier, SOURCE, UserSchema } from './github-trigger.ts'
 
 const PullSchema = z.looseObject({
   title: z.string().optional(), state: z.string(), html_url: z.string(), user: UserSchema,
-  body: z.string().nullish(), created_at: z.string().optional(),
+  body: z.string().nullish(), created_at: z.string().optional(), labels: LabelsSchema,
   merged: z.boolean().optional(), merged_at: z.string().nullish(), closed_at: z.string().nullish(), auto_merge: z.unknown().optional(),
   head: z.looseObject({ sha: z.string(), ref: z.string(), repo: z.looseObject({ full_name: z.string() }).nullish() }),
 })

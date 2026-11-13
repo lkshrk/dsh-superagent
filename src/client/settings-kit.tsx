@@ -69,7 +69,8 @@ function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
-export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
+export function ModelField({ id, value, onChange, required }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void
+  required?: boolean }) {
   const { t, call } = usePanel()
   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
   const [error, setError] = useState<string>()
@@ -83,6 +84,7 @@ export function ModelField({ id, value, onChange }: { id: string; value: RoleMod
   const fallback = catalog?.default
   const input = (name: keyof typeof current, label: string, placeholder: string) => <Field label={label}>
     <Input list={`${id}-${name}s`} spellCheck={false} placeholder={placeholder} value={current[name]}
+      required={required && name !== 'effort'}
       onChange={event => set({ [name]: event.target.value })} />
   </Field>
   return <div className="dt-model">

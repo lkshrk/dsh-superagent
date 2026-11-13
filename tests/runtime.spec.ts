@@ -25,7 +25,7 @@ import { CliError, Commands } from '../src/infra/commands.ts'
 import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
 import { feishuTrigger } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
-import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
+import { commentTrigger, githubChannel, pullTrigger } from '../src/sources/github-trigger.ts'
 import { IM_WORDS } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
@@ -469,6 +469,51 @@ it('treats GitHub comments through the same gate: mentions by members are explic
   const ci = { ...stranger, id: 'ci-1', human: false, text: 'GitHub PR #7 CI: failing', meta: { ci: true } }
   await receive(ci)
   expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([expect.objectContaining({ triggerId: 'ci-1' })])
+})
+
+describe('the worker model picked by the ticket\'s labels', () => {
+  const opus = { provider: 'litellm', model: 'opus' }, fable = { provider: 'litellm', model: 'fable' }
+  const selected = (sessionId: string) => (agents.get(sessionId) as unknown as Agentlike).session.snapshotEvents()
+    .find(event => event.type === 'model/selection')?.data
+  type Agentlike = { session: { snapshotEvents(): { type: string; data: unknown }[] } }
+  beforeEach(() => {
+    const settings = runtime.store.settings()
+    runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, model: opus, modelRules: [{ label: 'hard', model: fable }] } })
+  })
+  async function accept(trigger: Trigger): Promise<string> {
+    await receive(trigger)
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix it', worktree_name: 'fix-it', acknowledgement: 'On it.' })
+    await runtime.idle()
+    return `worker-${(result.ticket as { ticket_id: string }).ticket_id}`
+  }
+  it('reads a GitHub ticket\'s current labels when its worker starts, so a label added after the mention counts', async () => {
+    const reads: string[] = []
+    const gh = vi.mocked(Commands.prototype.gh).getMockImplementation()!
+    vi.spyOn(Commands.prototype, 'gh').mockImplementation(async function (this: Commands, args: string[]) {
+      if (args[1] !== 'repos/acme/widgets/pulls/7') return gh.call(this, args)
+      reads.push(args[1])
+      return { id: 7, number: 7, title: 'Fix', state: 'open', created_at: '2026-09-09T00:00:00Z', html_url: 'https://github.com/acme/widgets/pull/7',
+        user: { login: 'carol' }, labels: [{ name: 'Hard' }], head: { ref: 'agent/fix-it', sha: 'head-1', repo: { full_name: 'acme/widgets' } } } as never
+    } as never)
+    const mention = commentTrigger({ id: 2, body: '@agent-bot please fix', user: { login: 'alice' }, html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-2',
+      created_at: '2026-09-09T00:01:00Z' }, { number: 7, isPr: true }, 'conversation', 'agent-bot')
+    expect(mention.meta).not.toHaveProperty('labels')
+    expect(selected(await accept(mention))).toEqual(fable)
+    expect(reads.length).toBeGreaterThan(0)
+  })
+  it('falls back to the labels of a GitHub ticket\'s origin trigger when reading its current labels fails', async () => {
+    const opened = pullTrigger({ number: 8, title: 'Fix', body: '@agent-bot please fix', user: { login: 'alice' }, created_at: '2026-09-09T00:00:00Z',
+      html_url: 'https://github.com/acme/widgets/pull/8', labels: [{ name: 'hard' }] }, 'agent-bot')
+    // The default GitHub answer for a PR lacks an Issue's fields, so the read fails its schema.
+    expect(selected(await accept(opened))).toEqual(fable)
+  })
+  it('uses the labels another Source put on its trigger, without reading GitHub', async () => {
+    const gh = vi.spyOn(Commands.prototype, 'gh')
+    const trigger = feishu('1', '@bot 修一下回归')
+    const sessionId = await accept({ ...trigger, meta: { ...trigger.meta, labels: ['hard'] } })
+    expect(selected(sessionId)).toEqual(fable)
+    expect(gh.mock.calls.filter(([args]) => /\/(issues|pulls)\/\d+$/.test(String(args[1])))).toEqual([])
+  })
 })
 
 it('relays an allowed sender\'s mention in a new Issue as an explicit candidate from the poll that reads its notification', async () => {

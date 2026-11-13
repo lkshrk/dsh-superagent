@@ -48,12 +48,16 @@ export const CommentSchema = z.looseObject({
 })
 export type GithubComment = z.infer<typeof CommentSchema>
 /** An Issue as `issues/<number>` returns it; GitHub sets `pull_request` when the number is a pull request. */
+export const LabelsSchema = z.array(z.looseObject({ name: z.string() })).nullish().catch(undefined)
+/** The names of an Issue's or PR's `labels`, as Trigger meta; omitted when it has none. */
+export const labelNames = (labels: z.infer<typeof LabelsSchema>): { labels?: string[] } =>
+  labels?.length ? { labels: labels.map(label => label.name) } : {}
 export const IssueSchema = CommentSchema.extend({
   number: z.number(), title: z.string(), state: z.string(), created_at: z.string(), html_url: z.string(),
-  pull_request: z.looseObject({ url: z.string() }).nullish(),
+  pull_request: z.looseObject({ url: z.string() }).nullish(), labels: LabelsSchema,
 })
 export type GithubIssue = z.infer<typeof IssueSchema>
-type Opened = Pick<GithubIssue, 'number' | 'title' | 'body' | 'user' | 'created_at' | 'html_url'>
+type Opened = Pick<GithubIssue, 'number' | 'title' | 'body' | 'user' | 'created_at' | 'html_url' | 'labels'>
 export interface PullRef { number: number; isPr: boolean; url?: string; prAuthor?: string; repository?: string | undefined }
 /**
  * True when GitHub reports the account as a regular user rather than a bot or GitHub App.
@@ -108,14 +112,15 @@ export function issueTrigger(issue: Opened, agent: string, repository?: string):
     text: `${issue.title}\n\n${body}`,
     ...(mentions(body, agent) ? { addressed: 'mention' as const } : {}),
     channel: githubChannel(issue.number, issue.html_url, repository), url: issue.html_url,
-    meta: { number: issue.number, isPr: false, ...qualified(repository), kind: 'issue' } }
+    meta: { number: issue.number, isPr: false, ...qualified(repository), kind: 'issue', ...labelNames(issue.labels) } }
 }
 /**
  * Builds the trigger for a newly opened PR's title and description.
  * PR and Issue numbers share one sequence in GitHub and never collide, so this reuses `issueTrigger`'s `github-issue` ID format.
  */
 export function pullTrigger(pull: Opened, agent: string, repository?: string): Trigger {
-  return { ...issueTrigger(pull, agent, repository), meta: { number: pull.number, isPr: true, ...qualified(repository), prAuthor: pull.user.login, kind: 'pull' } }
+  return { ...issueTrigger(pull, agent, repository), meta: { number: pull.number, isPr: true, ...qualified(repository), prAuthor: pull.user.login, kind: 'pull',
+    ...labelNames(pull.labels) } }
 }
 /** Builds a trigger for a default-branch CI transition; default-branch CI has no person to reply to, so it has no `channel`. */
 export function branchCiTrigger(branch: string, sha: string, revision: number, summary: string, url: string, repository?: string): Trigger {
