@@ -4,6 +4,7 @@ import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
+import { sameName } from './text.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -61,10 +62,19 @@ export class Commands {
    * @param resolved - returns the resolved deployment setup, or throws while setup is still pending.
    * @param environment - variables overriding `process.env` for every command (such as isolated git settings).
    */
-  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
+  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal,
+    private readonly scope?: string) {}
   get deployment(): Deployment { return this.resolved() }
-  get repository(): string { return this.deployment.repository }
-  withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+  /** The repository `api` and `pages` act on: the one `repo` chose, else the primary. */
+  get repository(): string { return this.scope ?? this.deployment.repository }
+  withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal]), this.scope) : this }
+  /** Commands acting on one of the deployment's repositories; the primary, or no name, gives unscoped commands. */
+  repo(name?: string): Commands {
+    if (!name || sameName(name, this.deployment.repository)) return this.scope ? new Commands(this.resolved, this.environment, this.signal) : this
+    const known = this.deployment.repositories.find(repository => sameName(repository, name))
+    if (!known) throw new Error(`${name} is not a repository of the GitHub Source`)
+    return new Commands(this.resolved, this.environment, this.signal, known)
+  }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,

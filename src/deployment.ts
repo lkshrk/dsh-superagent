@@ -56,8 +56,11 @@ export function machineOf(config: DeploymentConfig): Machine {
   return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, remoteWorkers, authenticatedPanel, ...managed ? { managed: managed.data } : {} }
 }
 
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  repositories: z.preprocess(value => Array.isArray(value) ? value.map(item => typeof item === 'string' ? { repository: item } : item) : value,
+    z.array(z.object({ repository: z.string().trim().regex(REPOSITORY, 'owner/name') }).strict())).default([]),
   cli: z.string().trim().default(''),
   login: z.string().trim().regex(/^([A-Za-z0-9-]+(\[bot\])?)?$/, 'a GitHub login').default(''),
   userId: z.preprocess(value => typeof value === 'number' ? String(value) : value, z.string().trim().regex(/^([1-9][0-9]*)?$/, 'a GitHub user ID')).default(''),
@@ -67,7 +70,12 @@ export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
 export interface Deployment extends Machine {
+  /** The primary repository; its Threads, cursors and Trigger IDs keep the unqualified form. */
   repository: string
+  /** Every repository the GitHub Source serves, primary first. */
+  repositories: string[]
+  /** Additional repositories setup could not verify, by name; they are retried while polling. */
+  unverified?: Record<string, string>
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
 }
@@ -129,15 +137,32 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   const configured = accounts.login ? { login: accounts.login, id: Number(accounts.userId) } : undefined
   const agent = configured && isBot(configured.login) ? configured : await signedIn()
   if (configured && !sameName(agent.login, configured.login)) throw new SetupError('agentLoginMismatch', { configured: configured.login, account: agent.login })
-  // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
-    throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
-  }))
-  if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
-  const repository = access.name
-  // Installation tokens report push as false; the App's installation grants the write access.
-  if (access.push !== true && !isBot(agent.login)) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  const check = async (name: string): Promise<string> => {
+    // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
+    const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${name}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
+      throw new SetupError('repositoryUnreadable', { account: agent.login, repository: name, output: reason(error) })
+    }))
+    if (!access) throw new SetupError('repositoryUnreported', { repository: name })
+    // Installation tokens report push as false; the App's installation grants the write access.
+    if (access.push !== true && !isBot(agent.login)) throw new SetupError('repositoryReadOnly', { account: agent.login, repository: access.name })
+    return access.name
+  }
+  const repository = await check(remote)
+  const repositories = [repository]
+  const unverified: Record<string, string> = {}
+  for (const { repository: name } of accounts.repositories) {
+    if (repositories.some(known => sameName(known, name)) || sameName(name, remote)) continue
+    try {
+      const canonical = await check(name)
+      if (!repositories.some(known => sameName(known, canonical))) repositories.push(canonical)
+    } catch (error) {
+      if (!(error instanceof SetupError)) throw error
+      repositories.push(name)
+      unverified[name] = error.message
+    }
+  }
+  return { ...machine, repository, repositories, ...Object.keys(unverified).length ? { unverified } : {},
+    github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

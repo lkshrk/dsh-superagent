@@ -96,6 +96,25 @@ describe('setup', () => {
     await needs('repositoryReadOnly', { repository: 'acme/widgets', cli: gh(join(dir, 'bin', 'gh-reader'), 'Agent-Bot', false), login: 'agent-bot', userId: '7' })
     await expect(resolveDeployment(machine(), { repository: 'acme/widgets', cli: app, login: 'my app', userId: 7 }, probe, path)).rejects.toThrow('a GitHub login')
   })
+  it('checks each additional repository, keeping a broken one out of the verified list without failing setup', async () => {
+    const cli = program(join(dir, 'bin', 'gh-many'), [
+      'case "$*" in',
+      `  "api user") echo '{"login":"Agent-Bot","id":7}' ;;`,
+      `  "api repos/acme/widgets "*) echo '{"name":"acme/widgets","push":true}' ;;`,
+      `  "api repos/ACME/Gadgets "*) echo '{"name":"acme/gadgets","push":true}' ;;`,
+      `  "api repos/other/tools "*) echo '{"name":"other/tools","push":false}' ;;`,
+      `  *) echo 'HTTP 404' >&2; exit 1 ;;`, 'esac'].join('\n'))
+    const one = await resolveDeployment(machine(), { repository: 'acme/widgets', cli }, probe, path)
+    expect(one.repositories).toEqual(['acme/widgets'])
+    expect(one).not.toHaveProperty('unverified')
+    const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli,
+      repositories: ['ACME/Gadgets', { repository: 'acme/widgets' }, 'other/tools', 'other/gone', 'acme/gadgets'] }, probe, path)
+    expect(deployment.repository).toBe('acme/widgets')
+    expect(deployment.repositories).toEqual(['acme/widgets', 'acme/gadgets', 'other/tools', 'other/gone'])
+    expect(deployment.unverified).toEqual({ 'other/tools': '@Agent-Bot cannot push to other/tools.', 'other/gone': expect.stringContaining('HTTP 404') })
+    await expect(resolveDeployment(machine(), { repository: 'other/gone', cli, repositories: ['acme/widgets'] }, probe, path))
+      .rejects.toEqual(setupError('github', 'repositoryUnreadable', { repository: 'other/gone' }))
+  })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
