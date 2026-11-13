@@ -9,6 +9,8 @@ import { testDeployment } from './fixtures/deployment.ts'
 import { commentTrigger } from '../src/sources/github-trigger.ts'
 import { observePull, pullRepository, ticketRepository } from '../src/sources/github-pull.ts'
 import { workingDirectory } from '../src/app/execution-environment.ts'
+import { ticketDetails } from '../src/app/cards.ts'
+import { ticketSummary } from '../src/app/views/records.ts'
 import type { Deployment } from '../src/deployment.ts'
 
 let h: Host | undefined
@@ -78,6 +80,9 @@ describe('repository Workspaces', () => {
     expect(variable(h, tools, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('other/tools')
     expect(variable(h, tools, 'DSH_SUPERAGENT_DIR')).toBe(tools.execution!.workspace)
     expect(variable(h, primary, 'DSH_SUPERAGENT_GITHUB_REPOSITORY')).toBe('acme/widgets')
+    expect(ticketDetails(tools, [], [], false, h.runtime.machine).directory).toBe(tools.execution!.workspace)
+    expect(ticketSummary(tools, h.runtime.machine).directory).toBe(tools.execution!.workspace)
+    expect(ticketSummary(tools).directory).toBe(tools.execution!.directory)
     // Switched off, the ticket's own directory is its directory again.
     expect(workingDirectory(tools.execution, { remoteWorkers: true, repositoryWorkspaces: false })).toBe(tools.execution!.directory)
     expect(workingDirectory(tools.execution, { remoteWorkers: false, repositoryWorkspaces: true })).toBe(tools.execution!.directory)

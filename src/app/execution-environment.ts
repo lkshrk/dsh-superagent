@@ -16,6 +16,8 @@ export const EXECUTOR_VARIABLES: readonly (VariableSpec & { ticket?: true })[] =
 export interface Variable { key: string; value: string; description: Localized; owner: string }
 
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
+/** Flags of a host whose workers never start in repository Workspaces. */
+export const NO_WORKSPACES = { remoteWorkers: false, repositoryWorkspaces: false } as const
 /** Where a ticket's worker works: its repository's shared Workspace while repository Workspaces are on, else its own directory. */
 export const workingDirectory = (execution: Execution | undefined, machine: Pick<Machine, 'remoteWorkers' | 'repositoryWorkspaces'>): string =>
   machine.remoteWorkers && machine.repositoryWorkspaces && execution?.workspace ? execution.workspace : execution?.directory ?? ''

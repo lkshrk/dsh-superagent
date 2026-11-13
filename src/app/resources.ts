@@ -1,4 +1,5 @@
 /** Serves paginated context resources to orchestrator_read so large bodies stay out of model prompts until requested. */
+import type { Machine } from '../deployment.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
 import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
@@ -63,6 +64,7 @@ export interface ResourceHost {
   readonly commands: Commands
   readonly masterId: string
   readonly context: Context
+  readonly machine?: Pick<Machine, 'remoteWorkers' | 'repositoryWorkspaces'>
   promptVersion(sessionId: string): PromptVersion
   /** Whether a Session may read `revision` (the revision it currently runs under or any revision it ran under previously). */
   mayRead(sessionId: string, revision: number): boolean
@@ -249,7 +251,7 @@ const ROUTES: readonly Route[] = [
         ({ thread: key, ...context ? { context: true } : {}, ...bound.has(key) ? { bound: true } : {} })
       const threads = [...subscribed.map(thread => marked(thread.key, !!thread.context?.includes(id))),
         ...[...bound].filter(key => !subscribed.some(thread => thread.key === key)).map(key => marked(key, false))]
-      return { ...ticketDetails(ticket, threads, batchOf(host, ticket), !!ticketId), ...retry }
+      return { ...ticketDetails(ticket, threads, batchOf(host, ticket), !!ticketId, host.machine), ...retry }
     }
     if (section === 'assignments' || section === 'inputs') {
       if (part !== undefined) throw new Error('Unknown context resource')
