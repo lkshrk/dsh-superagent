@@ -38,6 +38,7 @@ mise takes Node from `.node-version`; run `corepack enable` once so pnpm comes f
 `pnpm check` runs the typecheck, the tests and the build.
 
 Pushing a tag `vX.Y.Z` equal to `v` plus the `version` in `package.json` runs `pnpm check` and attaches `dsh-superagent-X.Y.Z.tgz` to the GitHub release for that tag.
+It also pushes `ghcr.io/lkshrk/dsh-superagent:X.Y.Z`, a `scratch` image for linux/amd64 and linux/arm64 that holds only that tarball at `/`, for mounting as a Kubernetes image volume; the release notes give its digest.
 
 `.github/workflows/upstream.yml` reports weekly how far `main` is from upstream. GitHub disables scheduled workflows in forks until you enable them in the Actions tab.
 
