@@ -1140,6 +1140,18 @@ describe('ticket commands', () => {
       h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' })
       expect(h.outbox.at(-1)!.channel).toEqual(trigger('1').channel)
     })
+    it('sends a person\'s message on the attached thread of a stopped ticket to Eval, without resuming it', () => {
+      const h = harness()
+      const ticketId = accepted(h).ticketId!
+      h.engine.attachThread(ticketId, signal)
+      h.engine.stopTicket(ticketId)
+      const inputs = h.repo.tickets.get(ticketId)!.inputs.length, evals = h.requests.length
+      h.tick(1); h.engine.receive(signalTrigger('2')); h.pump()
+      expect(h.repo.tickets.get(ticketId)!.ended).toMatchObject({ by: 'human' })
+      expect(h.repo.tickets.get(ticketId)!.inputs).toHaveLength(inputs)
+      expect(h.requests).toHaveLength(evals + 1)
+      expect(h.requests.at(-1)!.triggers.map(item => item.id)).toEqual(['2'])
+    })
     it('resumes an attached ticket the executor ended on a person\'s message there, and refuses a stopped one', () => {
       const events: string[] = []
       const h = harness({}, { emit: event => { events.push(event.type) } })
@@ -1150,6 +1162,7 @@ describe('ticket commands', () => {
       h.tick(1); h.engine.receive(signalTrigger('2')); h.settle()
       expect(events).toContain('ticket.resumed')
       expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+      expect(h.repo.tickets.get(ticketId)!.inputs).toContainEqual(expect.objectContaining({ kind: 'trigger', triggerId: '2', human: true }))
       const stopped = accepted(h, '3', 't3').ticketId!
       h.engine.stopTicket(stopped)
       expect(() => h.engine.attachThread(stopped, signal)).toThrow(new UserError('ticketStopped'))
