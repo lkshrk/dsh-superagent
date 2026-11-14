@@ -1,5 +1,6 @@
 /** Scoped runtime context exposed to each Source kind, isolating Sources from direct Store or Engine access. */
 import type { EngineForSources, ReceiveResult, Trigger } from '../core/index.ts'
+import { allowedSender } from '../policy.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
@@ -9,7 +10,7 @@ import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
 
 export interface SourceContextDeps {
-  readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read'>
+  readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read' | 'settings'>
   readonly outbox: Pick<Outbox, 'send'>
   readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed' | 'issueClosed'>
   readonly commands: Commands
@@ -44,6 +45,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       return instance?.enabled ? instance.config : undefined
     },
     receive: trigger => deps.receive(trigger),
+    admits: actor => actor.human && allowedSender(store.settings(), { source: kind.kind, id: actor.id }) !== undefined,
     atomic: work => store.atomic(work),
     state: {
       get: name => store.get(name),
