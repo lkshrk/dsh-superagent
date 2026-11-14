@@ -1,0 +1,38 @@
+name: Upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: deepseek-ai/dsh-superagent-prototype
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare main with upstream main
+        run: |
+          git fetch --no-tags "https://github.com/$UPSTREAM.git" +main:refs/remotes/upstream/main
+          read -r ahead behind < <(git rev-list --left-right --count HEAD...upstream/main)
+          {
+            echo "## Fork main vs [$UPSTREAM](https://github.com/$UPSTREAM) main"
+            echo
+            echo "- Ahead: $ahead"
+            echo "- Behind: $behind"
+            echo
+            if [ "$behind" -gt 0 ]; then
+              echo "### Upstream commits not in the fork"
+              echo
+              git log --format="- [\`%h\`](https://github.com/$UPSTREAM/commit/%H) %s (%an, %as)" HEAD..upstream/main
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
