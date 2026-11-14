@@ -33,6 +33,7 @@ Read the numbered documents in order; each builds only on the ones before it.
 ## Development
 
 After cloning, run `mise install` and `lefthook install` once to get the pinned tools and the pre-commit and pre-push hooks.
+mise takes Node from `.node-version`; run `corepack enable` once so pnpm comes from `packageManager` in `package.json`.
 
 `pnpm check` runs the typecheck, the tests and the build.
 
