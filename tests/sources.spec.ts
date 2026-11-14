@@ -1199,6 +1199,13 @@ describe('source context', () => {
     expect(h.store.threads.get('github:8')).toBeUndefined()
     h.store.close()
   })
+  it('attaches through the source context', () => {
+    const h = host()
+    h.store.tickets.save(openTicket('t1'))
+    h.tickets.attachThread('t1', { source: 'signal', id: 'G:1' })
+    expect(h.store.threads.get('signal:G:1')!.subscriptions).toContain('t1')
+    h.store.close()
+  })
   it('reads the configuration of an instance that is on, removes a record set to undefined, and merges ticket meta', () => {
     const h = host()
     expect(h.config('feishu')).toMatchObject({ directMessages: true })

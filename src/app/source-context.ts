@@ -12,7 +12,7 @@ import type { Store } from './store.ts'
 export interface SourceContextDeps {
   readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read' | 'settings'>
   readonly outbox: Pick<Outbox, 'send'>
-  readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed' | 'issueClosed'>
+  readonly engine: Pick<EngineForSources, 'bindThread' | 'attachThread' | 'threadClosed' | 'issueClosed'>
   readonly commands: Commands
   readonly sources: SourceRegistry
   /** Throws when accessed before initial setup completes. */
@@ -69,6 +69,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
         return { items, next: last ? { at: last.updatedAt, id: last.id } : after }
       },
       bindThread: (id, thread, own) => { deps.engine.bindThread(id, thread, own) },
+      attachThread: (id, thread) => { deps.engine.attachThread(id, thread) },
       threadClosed: (thread, outcome, at) => { deps.engine.threadClosed(thread, outcome, at) },
       issueClosed: (id, at) => { deps.engine.issueClosed(id, at) },
     },

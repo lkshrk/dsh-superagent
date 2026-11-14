@@ -1085,6 +1085,77 @@ describe('ticket commands', () => {
     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
     expect(h.repo.tickets.get(ticketId)!.ended).toMatchObject({ outcome: 'completed' })
   })
+  describe('attachThread', () => {
+    const signal = { source: 'signal', id: 'G:1' }
+    const signalTrigger = (id: string) => trigger(id, { source: 'signal', threads: [signal], channel: { source: 'signal', thread: 'G:1', address: { message: id } } })
+    it('attaches a thread for input without a channel or a follows entry', () => {
+      const events: string[] = []
+      const h = harness({}, { emit: event => { events.push(event.type) } })
+      const ticketId = accepted(h).ticketId!
+      const channels = structuredClone(h.repo.tickets.get(ticketId)!.channels)
+      const before = events.filter(type => type === 'thread.subscribed').length
+      h.engine.attachThread(ticketId, signal)
+      h.engine.attachThread(ticketId, signal)
+      expect(h.repo.threads.get('signal:G:1')!.subscriptions).toEqual([ticketId])
+      expect(h.repo.tickets.get(ticketId)!.follows).toBeUndefined()
+      expect(h.repo.tickets.get(ticketId)!.channels).toEqual(channels)
+      expect(events.filter(type => type === 'thread.subscribed')).toHaveLength(before + 1)
+    })
+    it('delivers a person\'s message on an attached thread to the ticket\'s worker, not to Eval', () => {
+      const h = harness()
+      const ticketId = accepted(h).ticketId!
+      h.engine.attachThread(ticketId, signal)
+      const evals = h.requests.length
+      h.tick(1); h.engine.receive(signalTrigger('2')); h.pump()
+      expect(h.repo.tickets.get(ticketId)!.inputs).toContainEqual(expect.objectContaining({ kind: 'trigger', triggerId: '2', human: true }))
+      expect(h.repo.tickets.get(ticketId)!.inputs.find(input => input.kind === 'trigger' && input.triggerId === '2')).not.toHaveProperty('context')
+      expect(followupOwners(h.repo.triggers.get('2')!, h.repo)).toEqual([ticketId])
+      expect(h.repo.threads.get('signal:G:1')!.pending).toEqual([])
+      expect(h.requests).toHaveLength(evals)
+    })
+    it('ends an attached ticket on its ready report as before', () => {
+      const h = harness()
+      const ticketId = accepted(h).ticketId!
+      h.engine.attachThread(ticketId, signal)
+      h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+      expect(h.repo.tickets.get(ticketId)!.ended).toMatchObject({ outcome: 'completed' })
+    })
+    it('ends an attached ticket when its own pull request closes, though the attached thread stays open', () => {
+      const h = harness()
+      const ticketId = accepted(h).ticketId!
+      h.engine.bindThread(ticketId, { source: 'gh', id: 'pr-12' }, true)
+      h.engine.attachThread(ticketId, signal)
+      h.engine.threadClosed({ source: 'gh', id: 'pr-12' }, 'merged', '2026-09-23T00:01:00Z')
+      expect(h.repo.tickets.get(ticketId)!.ended).toMatchObject({ outcome: 'merged' })
+    })
+    it('answers on the attached message while attention keeps the origin channel', () => {
+      const h = harness()
+      const ticketId = accepted(h).ticketId!
+      h.engine.attachThread(ticketId, signal)
+      h.tick(1); h.engine.receive(signalTrigger('2')); h.settle()
+      h.engine.report(ticketId, { state: 'progress', summary: 'Yes', answers: '2' })
+      h.engine.reply({ purpose: 'answer', triggerId: '2', text: 'Yes' })
+      expect(h.outbox.at(-1)!.channel).toMatchObject({ source: 'signal' })
+      h.engine.report(ticketId, { state: 'progress', summary: 'asking', question: 'Which color?' })
+      h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' })
+      expect(h.outbox.at(-1)!.channel).toEqual(trigger('1').channel)
+    })
+    it('resumes an attached ticket the executor ended on a person\'s message there, and refuses a stopped one', () => {
+      const events: string[] = []
+      const h = harness({}, { emit: event => { events.push(event.type) } })
+      const ticketId = accepted(h).ticketId!
+      h.engine.attachThread(ticketId, signal)
+      h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+      expect(h.repo.tickets.get(ticketId)!.ended).toBeDefined()
+      h.tick(1); h.engine.receive(signalTrigger('2')); h.settle()
+      expect(events).toContain('ticket.resumed')
+      expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+      const stopped = accepted(h, '3', 't3').ticketId!
+      h.engine.stopTicket(stopped)
+      expect(() => h.engine.attachThread(stopped, signal)).toThrow(new UserError('ticketStopped'))
+      expect(() => h.engine.attachThread('missing', signal)).toThrow(new UserError('unknownTicket'))
+    })
+  })
   it('follows a Source\'s Threads, and ends once no Thread of its own is open, unless resumed work has not finished', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!

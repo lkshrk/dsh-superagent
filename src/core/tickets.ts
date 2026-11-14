@@ -55,6 +55,14 @@ export class Tickets extends EnginePart {
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
   }
   /**
+   * Subscribes a ticket to `thread` for input only, with no `follows` entry and no Channel.
+   * @throws UserError when the ticket is unknown or a person stopped it.
+   */
+  attachThread(ticketId: string, thread: ThreadRef): void {
+    if (this.require(ticketId).ended?.by === 'human') throw new UserError('ticketStopped')
+    this.subscribe(ticketId, thread)
+  }
+  /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
    * @throws UserError when the ticket is unknown or has ended.
    */

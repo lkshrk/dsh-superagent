@@ -55,6 +55,14 @@ export class Engine {
     return this.repo.atomic(() => this.tickets.bind(ticketId, thread, own))
   }
   /**
+   * A Source's request to subscribe a ticket to one of its Threads for input only: a person's message there reaches the
+   * ticket's worker, and the ticket gains no Channel and no `follows` entry, so its replies and its end are unchanged.
+   * @throws UserError when the ticket is unknown or a person stopped it.
+   */
+  attachThread(ticketId: string, thread: ThreadRef): void {
+    this.repo.atomic(() => { this.tickets.attachThread(ticketId, thread) })
+  }
+  /**
    * A Source's fact that a Thread closed, such as its pull request's merge, at the time it happened. An open ticket that
    * follows it ends once it is done with the Threads it follows, unless work resumed since the close has not finished, or
    * its worker took up a person's message the ticket decides after its latest report.
@@ -266,7 +274,7 @@ export class Engine {
 }
 
 /** What Sources ask and tell the Engine. */
-export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed' | 'issueClosed'>
+export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'attachThread' | 'threadClosed' | 'issueClosed'>
 /** What the main Session asks of the Engine. */
 export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
 /** What people ask of the Engine, through the panel or the main Session. */

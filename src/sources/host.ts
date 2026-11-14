@@ -63,6 +63,8 @@ export interface SourceContext {
     changed(after: TicketCursor, limit: number): { items: TicketChange[]; next: TicketCursor }
     /** Binds an open ticket to follow a Source Thread (`own` when opened by the ticket) so the Thread's close, not a ready report, ends the ticket. */
     bindThread(id: string, thread: ThreadRef, own: boolean): void
+    /** Subscribes a ticket to a Source Thread for input only: a person's message there reaches the ticket as a follow-up its worker decides; the ticket gains no Channel and no `follows` entry, so its replies and its end are unchanged. */
+    attachThread(id: string, thread: ThreadRef): void
     /** Reports that a followed Thread closed at `at`; each open ticket following it ends once no `own` Thread remains open and no resumed work is still running. */
     threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void
     /** Reports that the issue a ticket started on closed at `at`; once the ticket has ended, its worker Session is archived. */
