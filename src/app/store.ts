@@ -29,6 +29,7 @@ export interface SettingsVersion {
  */
 const SETS: Record<string, Record<string, string>> = {
   ticket: {
+    updated: "TEXT AS (value ->> '$.updatedAt')",
     open: "INTEGER AS (CASE WHEN value -> '$.ended' IS NULL THEN 1 END)",
     // Only the latest assignment can be pending or running because the Engine closes one before adding the next.
     active: `INTEGER AS (CASE WHEN json_array_length(value, '$.undelivered') > 0

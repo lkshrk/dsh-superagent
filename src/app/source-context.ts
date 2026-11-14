@@ -1,5 +1,5 @@
 /** Scoped runtime context exposed to each Source kind, isolating Sources from direct Store or Engine access. */
-import type { EngineForSources, ReceiveResult, Trigger } from '../core/index.ts'
+import { ticketStage, type EngineForSources, type ReceiveResult, type Trigger } from '../core/index.ts'
 import { allowedSender } from '../policy.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
@@ -61,6 +61,11 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     tickets: {
       get: id => store.tickets.get(id),
       open: () => store.tickets.open(),
+      changed: (after, limit) => {
+        const items = store.read.changedTickets(after, Math.min(500, Math.max(1, Math.trunc(limit) || 1))).map(ticket => ({ ticket, stage: ticketStage(ticket) }))
+        const last = items.at(-1)?.ticket
+        return { items, next: last ? { at: last.updatedAt, id: last.id } : after }
+      },
       bindThread: (id, thread, own) => { deps.engine.bindThread(id, thread, own) },
       threadClosed: (thread, outcome, at) => { deps.engine.threadClosed(thread, outcome, at) },
       issueClosed: (id, at) => { deps.engine.issueClosed(id, at) },

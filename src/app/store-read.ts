@@ -1,7 +1,8 @@
 /** Read-only Store queries for views, tools, and Source polling. */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import type { Decision, Thread, Trigger } from '../core/index.ts'
+import type { Decision, Thread, Ticket, Trigger } from '../core/index.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
+import type { TicketCursor } from '../sources/host.ts'
 
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
@@ -77,5 +78,7 @@ export function storeReads(db: DatabaseSync) {
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.
     : values('SELECT value FROM thread INDEXED BY thread_subscribed WHERE subscribed IS NOT NULL ORDER BY rowid'),
+  /** Tickets updated after `after` in (updatedAt, id) order. */
+  changedTickets: (after: TicketCursor, limit: number): Ticket[] => values('SELECT value FROM ticket WHERE updated IS NOT NULL AND (updated > ? OR (updated = ? AND id > ?)) ORDER BY updated, id LIMIT ?', after.at, after.at, after.id, limit),
   }
 }

@@ -1116,6 +1116,22 @@ describe('github source', () => {
 })
 
 describe('source context', () => {
+  it('reads ticket changes with their stage and a cursor that moves past them', () => {
+    const h = host()
+    const after = { at: '', id: '' }
+    expect(h.tickets.changed(after, 10)).toEqual({ items: [], next: after })
+    const asked = { ...openTicket('ticket'), updatedAt: '2026-11-14T10:00:00.000Z', attention: { id: 'q1', question: 'Which one?' } } as Ticket
+    h.store.tickets.save(asked)
+    const { items, next } = h.tickets.changed(after, 10)
+    expect(items[0]!.stage).toEqual({ stage: 'person', action: 'answer' })
+    expect(next).toEqual({ at: asked.updatedAt, id: asked.id })
+    expect(h.tickets.changed(next, 10).items).toEqual([])
+    h.store.tickets.save({ ...openTicket('second'), updatedAt: '2026-11-14T10:00:01.000Z' })
+    expect(h.tickets.changed(after, 0).items).toHaveLength(1)
+    for (let n = 0; n < 501; n++) h.store.tickets.save({ ...openTicket(`bulk-${String(n).padStart(3, '0')}`), updatedAt: '2026-11-14T11:00:00.000Z' })
+    expect(h.tickets.changed(after, 9999).items).toHaveLength(500)
+    h.store.close()
+  })
   it('gives each kind the setup problem whose place it is', () => {
     const feishu: SetupProblem = { place: 'feishu', code: 'feishuNoBot', values: {}, detail: 'No bot' }
     const github: SetupProblem = { place: 'github', code: 'agentCliUnset', values: {}, detail: 'No CLI' }

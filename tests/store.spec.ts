@@ -45,6 +45,29 @@ const ticket = (id: string, state: 'open' | 'ended', assignments: Pick<Assignmen
 const thread = (id: string, source: string, fields: Partial<Thread> = {}): Thread =>
   ({ key: `${source}:${id}`, ref: { source, id }, createdAt: '', subscriptions: [], correlated: [], pending: [], meta: {}, ...fields })
 const ids = (items: { id?: string; key?: string }[]) => items.map(item => item.id ?? item.key).sort()
+it('lists tickets changed after a cursor in updatedAt then id order', () => {
+  const store = new Store(join(directory, 'orchestrator.sqlite'))
+  store.tickets.save({ ...ticket('t1', 'open', []), updatedAt: '2026-11-14T10:00:00.000Z' })
+  store.tickets.save({ ...ticket('b', 'open', []), updatedAt: '2026-11-14T10:00:01.000Z' })
+  store.tickets.save({ ...ticket('a', 'open', []), updatedAt: '2026-11-14T10:00:01.000Z' })
+  const after = { at: '2026-11-14T10:00:00.000Z', id: 't1' }
+  expect(store.read.changedTickets(after, 10).map(item => item.id)).toEqual(['a', 'b'])
+  expect(store.read.changedTickets(after, 1).map(item => item.id)).toEqual(['a'])
+  expect(store.read.changedTickets({ at: '2026-11-14T10:00:01.000Z', id: 'a' }, 10).map(item => item.id)).toEqual(['b'])
+  store.close()
+})
+it('adds the updated column to a database created without it', () => {
+  const path = join(directory, 'orchestrator.sqlite')
+  const first = new Store(path)
+  first.tickets.save({ ...ticket('a', 'open', []), updatedAt: '2026-11-14T10:00:00.000Z' })
+  first.close()
+  const raw = new DatabaseSync(path)
+  raw.exec('DROP INDEX ticket_updated; ALTER TABLE ticket DROP COLUMN updated')
+  raw.close()
+  const store = new Store(path)
+  expect(store.read.changedTickets({ at: '', id: '' }, 10).map(item => item.id)).toEqual(['a'])
+  store.close()
+})
 it('reads the working sets alone, in SQLite as in memory, and follows each save', () => {
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   for (const repo of [store, new MemoryRepositories()] as Repositories[]) {
