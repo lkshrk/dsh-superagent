@@ -74,7 +74,11 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       issueClosed: (id, at) => { deps.engine.issueClosed(id, at) },
     },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
-    health: () => Object.freeze(Object.fromEntries(Object.entries(deps.health()).map(([name, value]) => [name, Object.freeze({ ...value })]))),
+    health: () => {
+      const view = Object.entries(deps.health()).map(([name, entry]) =>
+        [name, Object.freeze({ ...entry, ...entry.values ? { values: Object.freeze({ ...entry.values }) } : {} })] as const)
+      return Object.freeze(Object.fromEntries(view))
+    },
     notify: message => { deps.outbox.send(message) },
     report: (entry, value) => {
       if (!kind.health.includes(entry)) throw new Error(`The ${kind.kind} Source has no health entry ${entry}`)
