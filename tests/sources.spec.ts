@@ -1139,6 +1139,10 @@ describe('source context', () => {
     h.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: { ...settings.policy.sources, github: { allowed: [{ id: 'bob' }] } } } })
     expect(github.admits({ id: 'alice', human: true })).toBe(false)
     expect(github.admits({ id: 'bob', human: true })).toBe(true)
+    const listed = h.store.settings()
+    h.store.saveSettings({ ...listed, policy: { ...listed.policy, sources: { ...listed.policy.sources, github: { allowed: [{ id: 'bob' }], bots: [{ id: 'ci-bot' }] } } } })
+    expect(h.store.settings().policy.sources.github!.bots).toEqual([{ id: 'ci-bot' }])
+    expect(github.admits({ id: 'ci-bot', human: true })).toBe(false)
     h.store.close()
   })
   it('lets a kind report only its own health entries', () => {
