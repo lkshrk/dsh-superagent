@@ -1,0 +1,13 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "github>lkshrk/gh-ops//renovate/presets/app-library.json5",
+    "helpers:pinGitHubActionDigests",
+  ],
+  packageRules: [
+    {
+      groupName: "dsh and cordis",
+      matchPackageNames: ["@deepseek-ai/**"],
+    },
+  ],
+}
