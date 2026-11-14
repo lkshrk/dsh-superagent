@@ -40,12 +40,12 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
   const receive = vi.fn(async (trigger: Trigger) => { const result = engine.receive(trigger); engine.evaluateDue(); return result })
   // Record outbound messages in the store without sending them.
   const parts: SourceContextDeps = { store, engine, outbox: { send: message => { store.receipts.add(message) } }, commands, sources, deployment,
-    ready: Promise.resolve(), configured: () => true, receive, ...overrides }
+    ready: Promise.resolve(), configured: () => true, receive, health: () => board.all, ...overrides }
   // The Sources' functions take the context; plugin entries and kind callbacks take the host, which builds each kind's context.
   const value = { ...parts, context: (kind: { kind: string; health: readonly string[] }) => sourceContextOf(parts, kind) }
   const context = sourceContextOf(parts, { kind: 'feishu', health: ['github', 'feishu', 'history'] })
   const health = overrides.sources ? healthOf.get(overrides.sources)!.all : board.all
-  return { ...value, ...context, health, store, engine, commands: parts.commands, receive, executor }
+  return { ...value, ...context, entries: health, board, store, engine, commands: parts.commands, receive, executor }
 }
 const healthOf = new WeakMap<SourceRegistry, HealthBoard>()
 function emptyRegistry(): SourceRegistry {
@@ -96,10 +96,10 @@ describe('feishu source', () => {
       const value = host({ sources: emptyRegistry(), ...overrides })
       const disposers: (() => unknown)[] = []
       applyFeishu({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-      await vi.waitFor(() => expect(value.health.history).toBeDefined())
+      await vi.waitFor(() => expect(value.entries.history).toBeDefined())
       const registered = value.sources.kind('feishu')
       // Snapshot health before disposal clears the registered entries.
-      const health = { ...value.health }
+      const health = { ...value.entries }
       for (const dispose of disposers) await dispose()
       return { ...value, registered, health }
     }
@@ -661,7 +661,7 @@ describe('github source', () => {
     expect(h.store.get('github-cursor:14')).toBeUndefined()
     expect(h.store.threads.get('github:14')!.meta.pollError).toContain('deleted')
     // Without a Thread to keep it, the Source's health names it.
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
     // GitHub also answers 404 for a private repository the agent lost access to: that is a failure read again.
     github(h, { notifications: [notification(16)] })
     await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
@@ -678,7 +678,7 @@ describe('github source', () => {
       'issues/12/comments': [comment, { body: 'no id' }] })
     await pollRound(h)
     expect(h.receive.mock.calls.map(([trigger]) => trigger.text)).toEqual(['@agent-bot please fix'])
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '1 notifications; next poll ≥ 60s; 2 unreadable items skipped' })
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: '1 notifications; next poll ≥ 60s; 2 unreadable items skipped' })
     h.store.close()
   })
   it('reads every page of the notifications when GitHub says there are more, and waits as long as GitHub asks', async () => {
@@ -700,7 +700,7 @@ describe('github source', () => {
     expect(notifications.map(args => args.includes('--paginate'))).toEqual([false, true])
     const paths = calls.map(args => args[1]!.split('?')[0])
     expect(paths).toEqual(expect.arrayContaining(['repos/acme/widgets/issues/12', 'repos/acme/widgets/issues/13']))
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 120s' })
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 120s' })
     h.store.close()
   })
   it('drops a notified Issue whose reads fail for a day, so the Source leaves the error, and keeps its read position', async () => {
@@ -724,7 +724,7 @@ describe('github source', () => {
     expect(h.store.get('github-retry')).toEqual({})
     expect(h.store.get('github-cursor:16')).toBe('2026-09-01T00:00:00.000Z')
     expect(h.store.threads.get('github:16')?.meta.pollError).toContain('Not Found')
-    expect(h.health.github).toMatchObject({ state: 'ready',
+    expect(h.entries.github).toMatchObject({ state: 'ready',
       detail: '0 notifications; next poll ≥ 60s; dropped after their reads kept failing: #16' })
     h.store.close()
   })
@@ -752,7 +752,7 @@ describe('github source', () => {
     expect(await pollRound(h)).toBe(60)
     expect(bare(reads)).not.toContain('notifications')
     expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'still broken' }))
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: 'notifications off; next poll ≥ 60s' })
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: 'notifications off; next poll ≥ 60s' })
     h.store.close()
   })
   it('takes in the description of a notified PR someone opened since the cursor, as a new PR\'s stream does', async () => {
@@ -818,7 +818,7 @@ describe('github source', () => {
     })
     // With every failure a 410, the round succeeds and names what GitHub deleted.
     await pollRound(h)
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: expect.stringContaining('deleted on GitHub: #5, #7, #8') })
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: expect.stringContaining('deleted on GitHub: #5, #7, #8') })
     h.store.close()
   })
   it('waits for setup, pauses while the Source is off, and counts only consecutive failed polls towards an error', async () => {
@@ -836,10 +836,10 @@ describe('github source', () => {
         return { value, stop: async () => { for (const dispose of disposers) await dispose(); value.store.close() } }
       }
       const pending = await start({ configured: () => false })
-      await vi.waitFor(() => expect(pending.value.health.github).toMatchObject({ state: 'paused', code: 'setupPending' }))
+      await vi.waitFor(() => expect(pending.value.entries.github).toMatchObject({ state: 'paused', code: 'setupPending' }))
       await pending.stop()
       const off = await start({}, { enabled: false, config: {} })
-      await vi.waitFor(() => expect(off.value.health.github).toMatchObject({ state: 'paused', code: 'sourceOff' }))
+      await vi.waitFor(() => expect(off.value.entries.github).toMatchObject({ state: 'paused', code: 'sourceOff' }))
       await off.stop()
       // Rounds fail, succeed, fail, fail: only the last two in a row make the error. A round reads through a Commands of its own.
       const outcomes = [false, true, false, false]
@@ -857,9 +857,9 @@ describe('github source', () => {
         }
       }
       await until(3)
-      expect(flaky.value.health.github).toMatchObject({ state: 'ready' })
+      expect(flaky.value.entries.github).toMatchObject({ state: 'ready' })
       await until(4)
-      await vi.waitFor(() => expect(flaky.value.health.github).toMatchObject({ state: 'error', code: 'pollFailures', values: { count: '2' } }))
+      await vi.waitFor(() => expect(flaky.value.entries.github).toMatchObject({ state: 'error', code: 'pollFailures', values: { count: '2' } }))
       await flaky.stop()
       run.mockRestore()
     } finally { vi.useRealTimers() }
@@ -869,7 +869,7 @@ describe('github source', () => {
     const value = host({ sources: emptyRegistry(), ready: Promise.reject(new Error('lock held')) })
     const disposers: (() => unknown)[] = []
     applyGithub({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-    await vi.waitFor(() => expect(value.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('lock held') }))
+    await vi.waitFor(() => expect(value.entries.github).toMatchObject({ state: 'error', detail: expect.stringContaining('lock held') }))
     for (const dispose of disposers) await dispose()
     value.store.close()
   })
@@ -1141,6 +1141,22 @@ describe('source context', () => {
     expect(h.context({ kind: 'probe', health: [] }).problem).toBeUndefined()
     h.store.close()
   })
+  it('shows every health entry read-only', () => {
+    const h = host()
+    const runtime = h.board.claim('runtime', { state: 'ready', detail: 'up' })
+    const probe = h.board.claim('probe-a')
+    probe.set({ state: 'error', detail: 'down' })
+    const view = h.context(feishuKind).health()
+    expect(view['probe-a']).toEqual({ state: 'error', detail: 'down' })
+    expect(Object.keys(view)).toEqual(expect.arrayContaining(['runtime', 'feishu']))
+    expect(() => { (view as Record<string, unknown>)['x'] = 1 }).toThrow()
+    expect(() => { (view['probe-a'] as { state: string }).state = 'ready' }).toThrow()
+    expect(h.board.all['probe-a']).toEqual({ state: 'error', detail: 'down' })
+    runtime.set({ state: 'paused', detail: 'later' })
+    expect(view['runtime']).toEqual({ state: 'ready', detail: 'up' })
+    expect(h.context(feishuKind).health()['runtime']).toEqual({ state: 'paused', detail: 'later' })
+    h.store.close()
+  })
   it('admits a person on its own Source\'s allowed list by the current settings, never a bot or a Source without a list', () => {
     const h = host()
     const feishu = h.context(feishuKind), github = h.context(githubKind), probe = h.context({ kind: 'probe', health: [] })
@@ -1165,7 +1181,7 @@ describe('source context', () => {
     const h = host()
     const github = h.context(githubKind)
     github.report('github', { state: 'ready', detail: 'ok' })
-    expect(h.health.github).toEqual({ state: 'ready', detail: 'ok' })
+    expect(h.entries.github).toEqual({ state: 'ready', detail: 'ok' })
     expect(() => github.report('feishu', { state: 'error', detail: 'x' })).toThrow('no health entry feishu')
     h.store.close()
   })
@@ -1258,7 +1274,7 @@ describe('feishu event consumer', () => {
     const health = board.all
     const commands = new Commands(() => deployment, {}, controller.signal)
     const deps: SourceContextDeps = { store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(), configured: () => true,
-      receive: (trigger: Trigger) => engine.receive(trigger) }
+      health: () => health, receive: (trigger: Trigger) => engine.receive(trigger) }
     const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: false, config: { chats: [] } } } }))
     return { ctx: sourceContextOf(deps, feishuKind), health, store, turnOff }
   }
@@ -1455,7 +1471,7 @@ describe('observing the GitHub repository', () => {
     expect(h.store.threads.get('github:other/tools#4')?.meta.title).toBe('Issue 4')
     // The unverified repository is checked again each round, read for nothing else, and named on the health as an error.
     expect(calls.filter(path => path.startsWith('repos/other/gone'))).toEqual(['repos/other/gone'])
-    expect(h.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/gone: gh: Not Found (HTTP 404)') })
+    expect(h.entries.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/gone: gh: Not Found (HTTP 404)') })
     // Once it can be read, it is polled like the others.
     run.mockImplementation(async (_program, args) => {
       calls.push(args[1]!)
@@ -1467,7 +1483,7 @@ describe('observing the GitHub repository', () => {
     })
     await pollRound(h)
     expect(calls.filter(path => path.startsWith('repos/other/gone/issues'))).toHaveLength(1)
-    expect(h.health.github).toMatchObject({ state: 'ready' })
+    expect(h.entries.github).toMatchObject({ state: 'ready' })
     // A repository taken off the list is no longer heard.
     configure([])
     expect(h.engine.receive(issueTrigger(tools(5), 'agent-bot', 'other/tools'))).toBe('filtered')
@@ -1502,7 +1518,7 @@ describe('observing the GitHub repository', () => {
     expect(Object.keys(h.store.get<Record<string, unknown>>('github-retry')!)).toEqual(['other/tools#7'])
     expect(h.store.get('github-since')).toBe(at(-24))
     expect(h.store.get<string>('github-since:other/tools')! > at(-24)).toBe(true)
-    expect(h.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/old: other/old is now other/new on GitHub') })
+    expect(h.entries.github).toMatchObject({ state: 'error', detail: expect.stringContaining('other/old: other/old is now other/new on GitHub') })
     expect(calls.filter(path => path.startsWith('repos/other/old/'))).toEqual([])
     Object.assign(answers, { 'repos/acme/widgets/notifications': [], 'repos/other/tools/notifications': refused(502, 'Bad Gateway') })
     await expect(pollRound(h)).rejects.toThrow('Notifications failed: other/tools: Error: gh: Bad Gateway (HTTP 502)')

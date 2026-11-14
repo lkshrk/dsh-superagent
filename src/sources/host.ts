@@ -70,6 +70,8 @@ export interface SourceContext {
   }
   triggers: { get(id: string): Trigger | undefined; /** The newest Trigger on a Thread. */ latest(thread: string): Trigger | undefined }
   notify(message: OutboundMessage): void
+  /** A frozen copy of every health entry on the host, taken at the call; write only this kind's own entries through `report`. */
+  health(): Readonly<Record<string, Readonly<Health>>>
   /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
   report(entry: string, health: Health): void
 }

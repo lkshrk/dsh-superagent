@@ -192,7 +192,7 @@ Generic code accesses Source behavior through the registry. `send(message, comma
 
 Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
 
-That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `admits` (whether a person is on the kind's allowed list in the current Policy), `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads (including `changed(after, limit)`, the tickets changed since a cursor with their stage, so a Source can follow transitions without reading every ticket) and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries.
+That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `admits` (whether a person is on the kind's allowed list in the current Policy), `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads (including `changed(after, limit)`, the tickets changed since a cursor with their stage, so a Source can follow transitions without reading every ticket) and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries. `health()` returns a frozen copy of every health entry, so a Source can tell people when another part fails; it writes only its own entries through `report`.
 
 ### DshExecutor
 

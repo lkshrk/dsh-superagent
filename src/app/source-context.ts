@@ -4,7 +4,7 @@ import { allowedSender } from '../policy.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
-import type { SourceContext } from '../sources/host.ts'
+import type { Health, SourceContext } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
@@ -19,6 +19,8 @@ export interface SourceContextDeps {
   readonly deployment: Deployment
   readonly ready: Promise<void>
   configured(): boolean
+  /** The host's HealthBoard entries as they stand now. */
+  health(): Readonly<Record<string, Health>>
   /** Setup problem whose `place` matches the Source kind receives it on `context.problem`. */
   readonly setupProblem?: SetupProblem | undefined
   /** Why setup found no Feishu bot even though the Feishu Source names a CLI. */
@@ -71,6 +73,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       issueClosed: (id, at) => { deps.engine.issueClosed(id, at) },
     },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
+    health: () => Object.freeze(Object.fromEntries(Object.entries(deps.health()).map(([name, value]) => [name, Object.freeze({ ...value })]))),
     notify: message => { deps.outbox.send(message) },
     report: (entry, value) => {
       if (!kind.health.includes(entry)) throw new Error(`The ${kind.kind} Source has no health entry ${entry}`)
