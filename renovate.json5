@@ -1,13 +1,18 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  extends: [
-    "github>lkshrk/gh-ops//renovate/presets/app-library.json5",
-    "helpers:pinGitHubActionDigests",
-  ],
+  extends: ["github>lkshrk/gh-ops//renovate/presets/app-library.json5"],
+  // Lockfile refreshes would conflict with every upstream sync of this fork.
+  lockFileMaintenance: {
+    enabled: false,
+  },
   packageRules: [
     {
       groupName: "dsh and cordis",
       matchPackageNames: ["@deepseek-ai/**"],
+    },
+    {
+      matchDepTypes: ["peerDependencies"],
+      enabled: false,
     },
   ],
 }
