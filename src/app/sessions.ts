@@ -5,7 +5,6 @@ import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
-import { format } from 'node:util'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket, type Trigger } from '../core/index.ts'
 import { mandateInstructions, sourceTrigger, ticketOfSession } from '../executor/dsh.ts'
@@ -13,6 +12,7 @@ import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
+import { report } from './report.ts'
 import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel, workerModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
@@ -73,8 +73,8 @@ const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => 
 const SPLIT_LINEAR_TOOLS = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue']
 /** The Linear MCP tool any worker of a Linear ticket may use, to embed screenshots in its reply. */
 const UPLOAD_LINEAR_TOOL = 'prepare_file_upload'
-/** A LiteLLM server endpoint names its tools `<server>-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
-const LINEAR_TOOL = /^mcp__linear__(?:[A-Za-z0-9_-]*-)?([A-Za-z0-9_]+)$/
+/** LiteLLM's `linear_app` server names its tools `linear_app-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
+const LINEAR_TOOL = /^mcp__linear__(?:linear_app-)?([A-Za-z0-9_]+)$/
 /** The Linear tool a public tool name stands for, such as `save_issue`. */
 const linearTool = (name: string): string | undefined => LINEAR_TOOL.exec(name)?.[1]
 /** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
@@ -95,8 +95,8 @@ function imageUploadOnly({ name, arguments: input }: { name: string; arguments: 
   const { contentType, size, filename } = (input ?? {}) as { contentType?: unknown; size?: unknown; filename?: unknown }
   if (typeof contentType !== 'string' || !UPLOAD_TYPES.includes(contentType)) return `Only ${UPLOAD_TYPES.join(', ')} uploads are allowed`
   if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > UPLOAD_MAX_BYTES) return 'Upload size must be a whole number of bytes from 1 to 10 MiB'
-  if (typeof filename !== 'string' || filename === '' || filename.length > 200 || /[/\\]/.test(filename)) {
-    return 'Upload filename must be 1 to 200 characters without / or \\'
+  if (typeof filename !== 'string' || filename.trim() === '' || filename.length > 200 || /[/\\\0]/.test(filename)) {
+    return 'Upload filename must be 1 to 200 characters, not only blanks, without /, \\ or NUL'
   }
   return undefined
 }
@@ -157,11 +157,6 @@ export class Sessions {
     // Deliver relays and notices to the main Session in the order they were queued.
     host.effects.handle('relay', ({ text }, requestId) => this.prompt(host.masterId, requestId, text, 'steer'), { ordered: true })
     host.effects.handle('notice', ({ value, summary }, name) => this.inject(name, value, summary), { ordered: true })
-  }
-  /** Logs a line for the operator; dsh-yawn exports no plugin logger output to the container log, so stderr gets it too. */
-  private report(level: 'info' | 'warn', message: string, ...args: unknown[]): void {
-    this.ctx.logger[level](message, ...args)
-    process.stderr.write(`${format(message, ...args)}\n`)
   }
   /** Subscribes to host agent and session events so newly created sessions are decorated and model-budget retries are reflected in health. Call once at startup. */
   install(): void {
@@ -316,7 +311,7 @@ export class Sessions {
       binding.skills = undefined
       this.bindSkills(binding, host.prompts.current())
     })
-    binding.disposers.push(() => { skillScope.dispose().catch((error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release a skill scope: %s', String(error)) }) })
+    binding.disposers.push(() => { skillScope.dispose().catch((error: unknown) => { report(this.ctx, 'warn', 'dsh-superagent could not release a skill scope: %s', String(error)) }) })
     await skillScope
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
@@ -377,21 +372,21 @@ export class Sessions {
       previous?.dispose()
       if (previous && previous.linear.join('\n') === linear.join('\n')) return
       if (epic) {
-        this.report('info', 'dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
+        report(this.ctx, 'info', 'dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
           linear.join(', ') || 'none yet')
       } else if (admitted.size) {
-        this.report('info', 'dsh-superagent built the tools of %s for Linear ticket %s; Linear tools: %s', agent.id, ticketId, linear.join(', ') || 'none yet')
+        report(this.ctx, 'info', 'dsh-superagent built the tools of %s for Linear ticket %s; Linear tools: %s', agent.id, ticketId, linear.join(', ') || 'none yet')
       }
     }
     restrict()
     // Runs inside whoever emitted the event, so a failed rebuild keeps the previous mask instead of throwing there.
     const rebuild = () => {
-      try { restrict() } catch (error) { this.report('warn', 'dsh-superagent could not update the tools of %s: %s', agent.id, String(error)) }
+      try { restrict() } catch (error) { report(this.ctx, 'warn', 'dsh-superagent could not update the tools of %s: %s', agent.id, String(error)) }
     }
     const missing = worker && epic ? setTimeout(() => {
       const current = store.tickets.get(ticketId)
       if (mask?.linear.length || !current || !liveTicket(current)) return
-      this.report('warn', 'dsh-superagent split worker %s for ticket %s still has no Linear tools 60 s after it started; is the linear MCP server connected?',
+      report(this.ctx, 'warn', 'dsh-superagent split worker %s for ticket %s still has no Linear tools 60 s after it started; is the linear MCP server connected?',
         agent.id, ticketId)
     }, 60_000) : undefined
     missing?.unref?.()
@@ -456,7 +451,7 @@ export class Sessions {
     this.bindings.delete(agent)
     binding.skills?.dispose()
     for (const dispose of binding.disposers.splice(0).reverse()) {
-      try { dispose() } catch (error) { this.ctx.logger.warn('dsh-superagent could not release what it registered for a Session: %s', String(error)) }
+      try { dispose() } catch (error) { report(this.ctx, 'warn', 'dsh-superagent could not release what it registered for a Session: %s', String(error)) }
     }
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */

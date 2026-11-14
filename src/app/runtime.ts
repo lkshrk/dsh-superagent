@@ -26,6 +26,7 @@ import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
+import { report } from './report.ts'
 import { Store } from './store.ts'
 import { evalsHealth } from './views/overview.ts'
 import { TextCache } from './cache.ts'
@@ -98,8 +99,7 @@ export class Runtime extends Service implements SourceHost {
     this.releaseLock = locked ?? (async () => { release() })
     let opened: Store | undefined
     try {
-      const report = (error: unknown) => { ctx.logger.warn('dsh-superagent: %s', String(error)) }
-      const store = opened = this.store = new Store(join(machine.stateDir, 'orchestrator.sqlite'), report)
+      const store = opened = this.store = new Store(join(machine.stateDir, 'orchestrator.sqlite'), error => { report(ctx, 'warn', 'dsh-superagent: %s', String(error)) })
       const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
@@ -249,7 +249,7 @@ export class Runtime extends Service implements SourceHost {
   }
   private managedHost(): ManagedHost {
     const { settings, store, prompts, sessions, sources } = this
-    return { settings, store, prompts, sessions, sources, warn: message => { this.ctx.logger.warn('dsh-superagent: %s', message) } }
+    return { settings, store, prompts, sessions, sources, warn: message => { report(this.ctx, 'warn', 'dsh-superagent: %s', message) } }
   }
   private httpHost(): HttpHost {
     const runtime = this
@@ -280,8 +280,7 @@ export class Runtime extends Service implements SourceHost {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
       this.setup.restore()
       try { this.store.close() } finally {
-        const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
-          String(error)) }
+        const unreleased = (error: unknown) => { report(this.ctx, 'warn', 'dsh-superagent could not release its state directory lock: %s', String(error)) }
         await this.releaseLock?.().catch(unreleased)
       }
     }

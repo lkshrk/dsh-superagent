@@ -5,6 +5,7 @@ import { SETUP_FIELDS, localProbe, resolveDeployment, resolveFeishuBot, workerPr
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
+import { report } from './report.ts'
 
 export interface SetupHost {
   readonly context: Context
@@ -83,7 +84,7 @@ export class Setup {
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
-      context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
+      report(context, 'warn', 'dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }

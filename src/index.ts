@@ -1,6 +1,7 @@
 /** Main plugin entry: mounts the Runtime and provides its restart callback for deployment account changes. */
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
+import { report } from './app/report.ts'
 import { Runtime } from './app/runtime.ts'
 import { lockStateDir } from './app/state-lock.ts'
 import { Config, machineOf, type DeploymentConfig, type Machine } from './deployment.ts'
@@ -17,7 +18,7 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   // after restart to keep open configuration forms editable without a page reload.
   // TODO: drop the read once DSH's settings service rereads an entry whose plugin becomes active again.
   const restart = (): void => {
-    ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
+    ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { report(ctx, 'error', 'dsh-superagent restart failed: %s', String(error)) })
   }
   // Sessions on this host need DSH's permission presets; remote sandboxes run without them, and dsh-yawn leaves them out.
   if (machine.remoteWorkers) await start(ctx, machine, restart)
@@ -27,13 +28,13 @@ async function start(ctx: Context, machine: Machine, restart: () => void): Promi
   let runtime: Runtime | undefined
   const release = await lockStateDir(machine.stateDir, error => {
     if (runtime) runtime.lockCompromised(error)
-    else ctx.logger.error('dsh-superagent lost its state directory lock: %s', error.message)
+    else report(ctx, 'error', 'dsh-superagent lost its state directory lock: %s', error.message)
   })
   try { runtime = new Runtime(ctx, machine, restart, release) }
   catch (error) { await release().catch(() => {}); throw error }
   ctx.effect(() => async () => { await runtime.stop() })
   await runtime.ready
-  ctx.logger.info(runtime.configured() ? 'dsh-superagent ready; the Superagent sidebar entry opens the management panel' : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)
+  report(ctx, 'info', '%s', runtime.configured() ? 'dsh-superagent ready; the Superagent sidebar entry opens the management panel' : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)
 }
 export type { Deployment, DeploymentConfig } from './deployment.ts'
 export * from './core/index.ts'

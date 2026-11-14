@@ -14,9 +14,23 @@ import { workingDirectory } from '../src/app/execution-environment.ts'
 import { ticketDetails } from '../src/app/cards.ts'
 import { ticketSummary } from '../src/app/views/records.ts'
 import type { Deployment } from '../src/deployment.ts'
+import { report } from '../src/app/report.ts'
 
 let h: Host | undefined
 afterEach(async () => { await h?.stop(); h = undefined })
+
+it('reports an operator line to the plugin logger and to stderr, which reaches dsh-yawn\'s container log', () => {
+  const lines: string[] = []
+  const write = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { lines.push(String(chunk)); return true })
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  try {
+    report({ logger } as never, 'warn', 'dsh-superagent could not release a skill scope: %s', 'Error: gone')
+    report({ logger } as never, 'error', 'dsh-superagent restart failed: %s', 'Error: busy')
+  } finally { write.mockRestore() }
+  expect(logger.warn).toHaveBeenCalledWith('dsh-superagent could not release a skill scope: %s', 'Error: gone')
+  expect(logger.error).toHaveBeenCalledWith('dsh-superagent restart failed: %s', 'Error: busy')
+  expect(lines).toEqual(['dsh-superagent could not release a skill scope: Error: gone\n', 'dsh-superagent restart failed: Error: busy\n'])
+})
 
 it('checks setup on this host, leaves the process environment alone, and runs without DSH\'s permission presets', async () => {
   const before = { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GH_TOKEN: process.env.GH_TOKEN }
@@ -317,7 +331,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
   const READS = LINEAR.slice(0, 5)
   const UPLOAD_TYPE = 'Only image/png, image/jpeg, image/webp uploads are allowed'
   const UPLOAD_SIZE = 'Upload size must be a whole number of bytes from 1 to 10 MiB'
-  const UPLOAD_NAME = 'Upload filename must be 1 to 200 characters without / or \\'
+  const UPLOAD_NAME = 'Upload filename must be 1 to 200 characters, not only blanks, without /, \\ or NUL'
   /** What reached stderr, the only output of a plugin's that reaches dsh-yawn's container log. */
   const stderr: string[] = []
   beforeEach(() => {
@@ -434,6 +448,15 @@ describe('the Linear tools of a worker splitting an epic', () => {
       expect(stderr).toContain(`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${upload}\n`)
     })
 
+    it('admits Linear tools by their bare and linear_app- names only, refusing another server\'s prefix', async () => {
+      await startReal()
+      const worker = `worker-${tickets.split}`
+      const foreign = ['mcp__linear__github-list_issues', 'mcp__linear__x-save_issue', 'mcp__linear__linear_app2-get_issue', 'mcp__linear__-get_issue']
+      connect([...LITELLM, ...foreign])
+      expect(mcpOf(worker)).toEqual(LITELLM.slice(0, 6))
+      expect(foreign.map(name => reason(worker, name, { title: 'Part', parentId: 'ROU-592' }))).toEqual(foreign.map(denied))
+    })
+
     it('gives a split worker re-created after a restart the Linear tools of servers that connected before it', async () => {
       await startReal()
       const worker = `worker-${tickets.split}`
@@ -508,10 +531,10 @@ describe('the Linear tools of a worker splitting an epic', () => {
         const upload = (args: Record<string, unknown> | undefined) => call(worker, name, args === undefined ? undefined : { ...IMAGE, ...args })
         for (const contentType of ['image/png', 'image/jpeg', 'image/webp']) expect(upload({ contentType })).toBeUndefined()
         for (const size of [1, 10 * 1024 * 1024]) expect(upload({ size })).toBeUndefined()
-        expect(upload({ filename: 'a'.repeat(200) })).toBeUndefined()
+        for (const filename of ['a'.repeat(200), ' shot one.png']) expect(upload({ filename })).toBeUndefined()
         for (const contentType of ['image/svg+xml', 'application/pdf', 'IMAGE/PNG', 7]) expect(upload({ contentType })).toBe(UPLOAD_TYPE)
         for (const size of [0, -1, 10 * 1024 * 1024 + 1, 1.5, '4096', Number.NaN]) expect(upload({ size })).toBe(UPLOAD_SIZE)
-        for (const filename of ['', 'a'.repeat(201), '../shot.png', 'dir/shot.png', 'dir\\shot.png', 42]) expect(upload({ filename })).toBe(UPLOAD_NAME)
+        for (const filename of ['', ' ', ' \t\n', 'a'.repeat(201), '../shot.png', 'dir/shot.png', 'dir\\shot.png', 'shot\0.png', 42]) expect(upload({ filename })).toBe(UPLOAD_NAME)
         expect(upload(undefined)).toBe(UPLOAD_TYPE)
       }
     })
