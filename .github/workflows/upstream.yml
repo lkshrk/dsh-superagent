@@ -31,8 +31,8 @@ jobs:
             echo "- Behind: $behind"
             echo
             if [ "$behind" -gt 0 ]; then
-              echo "### Upstream commits not in the fork"
+              echo "### Upstream commits not in the fork ($behind, newest 50 listed)"
               echo
-              git log --format="- [\`%h\`](https://github.com/$UPSTREAM/commit/%H) %s (%an, %as)" HEAD..upstream/main
+              git log -n 50 --format="- [\`%h\`](https://github.com/$UPSTREAM/commit/%H) %s (%an, %as)" HEAD..upstream/main
             fi
           } >> "$GITHUB_STEP_SUMMARY"

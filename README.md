@@ -38,6 +38,8 @@ After cloning, run `mise install` and `lefthook install` once to get the pinned 
 
 Pushing a tag `vX.Y.Z` equal to `v` plus the `version` in `package.json` runs `pnpm check` and attaches `dsh-superagent-X.Y.Z.tgz` to the GitHub release for that tag.
 
+`.github/workflows/upstream.yml` reports weekly how far `main` is from upstream. GitHub disables scheduled workflows in forks until you enable them in the Actions tab.
+
 ## License
 
 [MIT](LICENSE)
