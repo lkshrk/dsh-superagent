@@ -7,7 +7,7 @@ import { applyManaged, applyManagedSource } from '../src/app/managed.ts'
 import { TEAM_SECTIONS, defaultPrompts } from '../src/app/prompts.ts'
 import { Config, machineOf } from '../src/deployment.ts'
 import { MANAGED_SECTIONS, type Managed } from '../src/managed.ts'
-import { CHAT, startRuntime, type Host } from './fixtures/host.ts'
+import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
 const cleanup: string[] = []
@@ -116,6 +116,21 @@ it('merges a managed policy part into the stored one, switches a Source off, and
   const before = revisions()
   await apply({ policy: { sources: { feishu: { allowed: [{ id: 'ou_bob' }] } } } })
   expect(revisions()).toEqual(before)
+})
+
+it('registers a managed team skill, a SKILL.md, in every worker Session under its frontmatter description, and keeps the panel\'s others', async () => {
+  const skill = '---\nname: dsh-superagent-delivery\ndescription: How to deliver a ticket.\n---\n\n# Delivery\n\nRun the tests.\n'
+  h = await startRuntime()
+  h.runtime.prompts.save({ ...defaultPrompts(), skills: { release: 'Tag releases.', delivery: 'Old text.' } }, h.runtime.prompts.current().revision, 'panel')
+  const warnings: string[] = []
+  await applyManaged(host(warnings), { prompts: { skills: { delivery: skill } } })
+  expect(h.runtime.prompts.current().source).toBe('config')
+  expect(h.runtime.prompts.current().config.skills).toEqual({ release: 'Tag releases.', delivery: skill })
+  const { sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  expect(h.skills.get(sessionId)!.get('dsh-superagent-delivery')).toMatchObject({ description: 'How to deliver a ticket.', content: '# Delivery\n\nRun the tests.\n' })
+  expect(h.skills.get(sessionId)!.get('dsh-superagent-release')).toMatchObject({ content: 'Tag releases.' })
+  await applyManaged(host(warnings), { prompts: { skills: { delivery: skill.replace('dsh-superagent-delivery', 'delivery') } } })
+  expect(warnings).toEqual([expect.stringMatching(/frontmatter name must be dsh-superagent-delivery/)])
 })
 
 it('reports a managed block its schema refuses and still applies the others', async () => {

@@ -16,7 +16,7 @@ import { report } from './report.ts'
 import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel, workerModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
-import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
+import { SKILL_PREFIX, teamSkill, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 import type { RegisterTool, Tool } from './tools/tool.ts'
@@ -425,8 +425,8 @@ export class Sessions {
     const disposers: (() => void)[] = []
     for (const [name, content] of this.host.prompts.skills(version.config)) {
       const bundled = name === 'feishu' || name === 'github' ? bundledSkills[name] : undefined
-      const body = version.config.skills[name] ?? ''
-      const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
+      const team = teamSkill(version.config.skills[name] ?? '')
+      const description = bundled?.description ?? team.description ?? (team.content.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
       disposers.push(scope.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',
         ...(bundled ? { resourceBase: { kind: 'directory' as const, path: dirname(bundled.path) } } : {}) }))
     }

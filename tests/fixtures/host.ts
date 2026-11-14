@@ -193,6 +193,8 @@ export async function startRuntime(seed?: (store: Store) => void,
   /** Each Session's next step, which takes the messages that wait for one. */
   const steps = new Map<string, () => void>(), claims = new Map<string, () => void>()
   const tools = new Map<string, Map<string, RegisteredTool>>()
+  /** The skills registered in each Session's skill scope, by name. */
+  const skills = new Map<string, Map<string, { name: string; description: string; content: string }>>()
   const deliveries = vi.fn<(request: Delivery) => void>()
   let http!: HttpHandler
   const resolveDefault = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
@@ -208,7 +210,11 @@ export async function startRuntime(seed?: (store: Store) => void,
         const inherited = options.globalTools ?? []
         agentCtx.reflect.provide('tools', { register, get: (name: string) => inherited.includes(name) ? { name } : undefined,
           schemas: () => inherited.map(name => ({ name })), restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
-        agentCtx.reflect.provide('skills', { register: () => () => {} })
+        const sessionSkills = new Map<string, { name: string; description: string; content: string }>()
+        skills.set(sessionId, sessionSkills)
+        agentCtx.reflect.provide('skills', { register: (skill: { name: string; description: string; content: string }) => {
+          sessionSkills.set(skill.name, skill); return () => sessionSkills.delete(skill.name)
+        } })
         agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
       }
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
@@ -342,7 +348,7 @@ export async function startRuntime(seed?: (store: Store) => void,
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  return { runtime, ctx, directory, agents, registry: services.workspaceRegistry, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
+  return { runtime, ctx, directory, agents, registry: services.workspaceRegistry, tools, skills, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
     jobs, subagents, step, claim }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

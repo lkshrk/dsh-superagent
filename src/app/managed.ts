@@ -25,7 +25,7 @@ async function saveBlock(host: ManagedHost, block: SettingsBlock, merge: (curren
   } catch (error) { host.warn(`managed ${block} settings were not applied: ${reason(error)}`) }
 }
 
-/** Applies the managed policy rules, eval and executor blocks and team prompt sections; each Source's parts wait for its kind, see `applyManagedSource`. */
+/** Applies the managed policy rules, eval and executor blocks, team prompt sections and team skills; each Source's parts wait for its kind, see `applyManagedSource`. */
 export async function applyManaged(host: ManagedHost, managed: Managed): Promise<void> {
   const { policy, eval: evaluation, executor, prompts } = managed
   if (policy?.rules) await saveBlock(host, 'policy', current => ({ ...current, rules: policy.rules }))
@@ -35,9 +35,10 @@ export async function applyManaged(host: ManagedHost, managed: Managed): Promise
     try {
       const current = host.prompts.current()
       const defaults = defaultPrompts()
-      const sections = Object.fromEntries(Object.entries(prompts).map(([section, value]) =>
+      const { skills, ...managedSections } = prompts
+      const sections = Object.fromEntries(Object.entries(managedSections).map(([section, value]) =>
         [section, typeof value === 'string' ? value : `${defaults[section as TeamSection].trimEnd()}\n\n${value!.append}`]))
-      const config = { ...current.config, ...sections }
+      const config = { ...current.config, ...sections, ...skills ? { skills: { ...current.config.skills, ...skills } } : {} }
       if (JSON.stringify(config) !== JSON.stringify(current.config)) await savePrompts(host, config, current.revision, 'config')
     } catch (error) { host.warn(`managed prompt sections were not applied: ${reason(error)}`) }
   }

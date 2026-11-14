@@ -20,6 +20,18 @@ export const SKILL_NAME = /^[a-z][a-z0-9-]*$/
 export const SKILL_PREFIX = 'dsh-superagent-'
 const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !(Object.keys(sourceSkills) as string[]).includes(name),
   'This name belongs to a built-in skill')
+const FRONTMATTER = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n+([\s\S]*)$/
+/** A team skill's text, optionally a SKILL.md with `name` and `description` frontmatter, split into its description and body. */
+export function teamSkill(text: string): { name?: string; description?: string; content: string } {
+  const match = FRONTMATTER.exec(text.replaceAll('\r\n', '\n'))
+  return match ? { name: match[1]!.trim(), description: match[2]!.trim(), content: match[3]! } : { content: text }
+}
+const SkillsSchema = z.record(SkillNameSchema, z.string()).superRefine((skills, check) => {
+  for (const [key, text] of Object.entries(skills)) {
+    const { name } = teamSkill(text)
+    if (name !== undefined && name !== `${SKILL_PREFIX}${key}`) check.addIssue({ code: 'custom', path: [key], message: `The frontmatter name must be ${SKILL_PREFIX}${key}` })
+  }
+})
 /** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
 const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
@@ -33,7 +45,7 @@ const OverrideSchema = z.object({ text: z.string(),
  * saved version holds it and refuses otherwise.
  */
 export const PromptConfigSchema = z.object({ communication: z.string(), scope: z.string(), delivery: z.string(),
-  skills: z.record(SkillNameSchema, z.string()), overrides: z.record(z.string(), OverrideSchema).optional()
+  skills: SkillsSchema, overrides: z.record(z.string(), OverrideSchema).optional()
     .describe('Text in place of a built-in part, by its key in prompts/defaults; a part not named follows its built-in text.') }).strict()
 export type PromptConfig = z.infer<typeof PromptConfigSchema>
 export interface PromptVersion { revision: number; previousRevision: number | null; savedAt: string; source: string; config: PromptConfig;
@@ -118,7 +130,7 @@ export function composePrompt(config: PromptConfig, role: Role, environment?: st
   return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
 }
 export function composeSkill(config: PromptConfig, name: string): string {
-  return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
+  return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : teamSkill(config.skills[name] ?? '').content
 }
 
 /** An override whose built-in text changed since its `base`, with that text when kept, or whose part this version no longer has. */
