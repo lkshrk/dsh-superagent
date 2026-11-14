@@ -315,6 +315,9 @@ describe('the Linear tools of a worker splitting an epic', () => {
   const call = (sessionId: string, name: string, args: unknown = {}) =>
     vi.mocked(toolsOf(sessionId).guard).mock.calls.map(([guard]) => guard({ name, arguments: args })).find(reason => reason !== undefined)
   const READS = LINEAR.slice(0, 5)
+  const UPLOAD_TYPE = 'Only image/png, image/jpeg, image/webp uploads are allowed'
+  const UPLOAD_SIZE = 'Upload size must be a whole number of bytes from 1 to 10 MiB'
+  const UPLOAD_NAME = 'Upload filename must be 1 to 200 characters without / or \\'
   /** What reached stderr, the only output of a plugin's that reaches dsh-yawn's container log. */
   const stderr: string[] = []
   beforeEach(() => {
@@ -406,8 +409,29 @@ describe('the Linear tools of a worker splitting an epic', () => {
       expect(mcpOf(worker)).toEqual(LITELLM.slice(0, 6))
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: none yet`)
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}`)
-      expect(logs.filter(line => line.includes(`worker-${tickets.plain}`))).toEqual([])
+      expect(stderr.filter(line => line.includes(`worker-${tickets.plain}`)))
+        .toEqual([`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: none yet\n`])
+      expect(stderr.filter(line => line.includes(`worker-${tickets.github}`))).toEqual([])
       expect(stderr).toContain(`dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}\n`)
+    })
+
+    it('admits prepare_file_upload to every Linear worker and its subagent once the server connects, and to no other Session', async () => {
+      await startReal()
+      const [upload] = SERVED('linear', ['prepare_file_upload'])
+      await subagent('plain-child', `worker-${tickets.plain}`)
+      connect([...LITELLM, upload!])
+      expect(mcpOf(`worker-${tickets.split}`)).toEqual([...LITELLM.slice(0, 6), upload])
+      for (const id of [`worker-${tickets.plain}`, 'plain-child']) {
+        expect(mcpOf(id)).toEqual([upload])
+        expect(reason(id, upload!, { filename: 'shot.png', contentType: 'image/png', size: 2048 })).toBeUndefined()
+        expect(reason(id, upload!, { filename: 'shot.svg', contentType: 'image/svg+xml', size: 2048 })).toBe(UPLOAD_TYPE)
+      }
+      for (const id of [`worker-${tickets.github}`, h!.runtime.masterId]) {
+        expect(mcpOf(id)).toEqual([])
+        expect(reason(id, upload!, { filename: 'shot.png', contentType: 'image/png', size: 2048 })).toBe(denied(upload!))
+      }
+      expect(logs).toContain(`info: dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${upload}`)
+      expect(stderr).toContain(`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${upload}\n`)
     })
 
     it('gives a split worker re-created after a restart the Linear tools of servers that connected before it', async () => {
@@ -443,6 +467,53 @@ describe('the Linear tools of a worker splitting an epic', () => {
         vi.advanceTimersByTime(60_000)
         expect(warnings()).toHaveLength(1)
       } finally { vi.useRealTimers() }
+    })
+  })
+
+  describe('prepare_file_upload', () => {
+    const UPLOADS = ['mcp__linear__prepare_file_upload', 'mcp__linear__linear_app-prepare_file_upload']
+    const WITH_UPLOAD = [...UNLINKED, ...LINEAR, ...UPLOADS]
+    const IMAGE = { filename: 'screenshot.png', contentType: 'image/png', size: 4096 }
+
+    it('admits only prepare_file_upload, by its bare and prefixed names, to a Linear worker that does not split, and its subagent', async () => {
+      await start(WITH_UPLOAD)
+      await subagent('plain-child', `worker-${tickets.plain}`)
+      for (const id of [`worker-${tickets.plain}`, 'plain-child']) {
+        expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...UPLOADS])
+        expect(UPLOADS.map(name => call(id, name, IMAGE))).toEqual([undefined, undefined])
+        expect(LINEAR.map(name => call(id, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+      }
+    })
+
+    it('admits the six split tools and prepare_file_upload to a split worker', async () => {
+      await start(WITH_UPLOAD)
+      const worker = `worker-${tickets.split}`
+      expect(allowed(worker).filter(name => name.startsWith('mcp__linear__'))).toEqual([...LINEAR.slice(0, 6), ...UPLOADS])
+      expect(UPLOADS.map(name => call(worker, name, IMAGE))).toEqual([undefined, undefined])
+    })
+
+    it('refuses prepare_file_upload to a GitHub worker, its subagent and the main Session', async () => {
+      await start(WITH_UPLOAD)
+      await subagent('github-child', `worker-${tickets.github}`)
+      for (const id of [`worker-${tickets.github}`, 'github-child', h!.runtime.masterId]) {
+        expect(allowed(id).some(name => name.startsWith('mcp__linear__'))).toBe(false)
+        expect(UPLOADS.map(name => call(id, name, IMAGE))).toEqual(UPLOADS.map(denied))
+      }
+    })
+
+    it('accepts PNG, JPEG and WebP images up to 10 MiB with a plain file name, and refuses anything else', async () => {
+      await start(WITH_UPLOAD)
+      const worker = `worker-${tickets.plain}`
+      for (const name of UPLOADS) {
+        const upload = (args: Record<string, unknown> | undefined) => call(worker, name, args === undefined ? undefined : { ...IMAGE, ...args })
+        for (const contentType of ['image/png', 'image/jpeg', 'image/webp']) expect(upload({ contentType })).toBeUndefined()
+        for (const size of [1, 10 * 1024 * 1024]) expect(upload({ size })).toBeUndefined()
+        expect(upload({ filename: 'a'.repeat(200) })).toBeUndefined()
+        for (const contentType of ['image/svg+xml', 'application/pdf', 'IMAGE/PNG', 7]) expect(upload({ contentType })).toBe(UPLOAD_TYPE)
+        for (const size of [0, -1, 10 * 1024 * 1024 + 1, 1.5, '4096', Number.NaN]) expect(upload({ size })).toBe(UPLOAD_SIZE)
+        for (const filename of ['', 'a'.repeat(201), '../shot.png', 'dir/shot.png', 'dir\\shot.png', 42]) expect(upload({ filename })).toBe(UPLOAD_NAME)
+        expect(upload(undefined)).toBe(UPLOAD_TYPE)
+      }
     })
   })
 

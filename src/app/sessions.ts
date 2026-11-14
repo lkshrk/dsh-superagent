@@ -71,20 +71,40 @@ const WORKER_MCP_PREFIXES = ['mcp__searxng__', 'mcp__context7__']
 const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => name.startsWith(prefix))
 /** The Linear MCP tools a worker splitting a Linear epic may use; `save_issue` only creates sub-issues of its epic. */
 const SPLIT_LINEAR_TOOLS = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue']
+/** The Linear MCP tool any worker of a Linear ticket may use, to embed screenshots in its reply. */
+const UPLOAD_LINEAR_TOOL = 'prepare_file_upload'
 /** A LiteLLM server endpoint names its tools `<server>-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
-const SPLIT_LINEAR = new RegExp(`^mcp__linear__(?:[A-Za-z0-9_-]*-)?(${SPLIT_LINEAR_TOOLS.join('|')})$`)
-/** The Linear tool a public tool name stands for when it is one of the split's, such as `save_issue`. */
-const splitLinearTool = (name: string): string | undefined => SPLIT_LINEAR.exec(name)?.[1]
+const LINEAR_TOOL = /^mcp__linear__(?:[A-Za-z0-9_-]*-)?([A-Za-z0-9_]+)$/
+/** The Linear tool a public tool name stands for, such as `save_issue`. */
+const linearTool = (name: string): string | undefined => LINEAR_TOOL.exec(name)?.[1]
 /** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
 function splitEpic(trigger: Trigger | undefined): string[] | undefined {
   if (trigger?.source !== 'linear' || trigger.meta.mode !== 'split') return undefined
   return [trigger.meta.identifier, trigger.meta.issue].filter((value): value is string => typeof value === 'string' && value !== '')
 }
+/** The Linear tools a worker may use by its ticket's origin Trigger: none unless it came from Linear. */
+function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined): ReadonlySet<string> {
+  if (trigger?.source !== 'linear') return new Set()
+  return new Set([...epic ? SPLIT_LINEAR_TOOLS : [], UPLOAD_LINEAR_TOOL])
+}
+const UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+/** Refuses a `prepare_file_upload` call for anything but a modest image with a plain file name. */
+function imageUploadOnly({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined {
+  if (linearTool(name) !== UPLOAD_LINEAR_TOOL) return undefined
+  const { contentType, size, filename } = (input ?? {}) as { contentType?: unknown; size?: unknown; filename?: unknown }
+  if (typeof contentType !== 'string' || !UPLOAD_TYPES.includes(contentType)) return `Only ${UPLOAD_TYPES.join(', ')} uploads are allowed`
+  if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > UPLOAD_MAX_BYTES) return 'Upload size must be a whole number of bytes from 1 to 10 MiB'
+  if (typeof filename !== 'string' || filename === '' || filename.length > 200 || /[/\\]/.test(filename)) {
+    return 'Upload filename must be 1 to 200 characters without / or \\'
+  }
+  return undefined
+}
 /** Refuses a `save_issue` call that updates an issue or creates one outside `epic`. */
 function createUnder(epic: readonly string[]) {
   const label = epic[0] ?? 'the ticket\'s epic'
   return ({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined => {
-    if (splitLinearTool(name) !== 'save_issue') return undefined
+    if (linearTool(name) !== 'save_issue') return undefined
     const args = (input ?? {}) as { id?: unknown; parentId?: unknown }
     if (args.id !== undefined) return `Only new sub-issues of ${label} may be created; updating an issue is refused`
     const parent = typeof args.parentId === 'string' ? args.parentId.toLowerCase() : undefined
@@ -331,7 +351,7 @@ export class Sessions {
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
    * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent; a ticket
-   * splitting a Linear epic also gets the split's Linear tools.
+   * splitting a Linear epic also gets the split's Linear tools, and any Linear ticket's worker gets `prepare_file_upload` for images.
    */
   private workOnly(agent: Agent, ticketId: string, own: readonly string[] = [], worker = false): (() => void)[] {
     const store = this.host.store
@@ -339,8 +359,11 @@ export class Sessions {
     const parent = scopeParentOf(agent)
     const remote = this.host.remoteWorkers === true
     const ticket = store.tickets.get(ticketId)
-    const epic = remote && ticket ? splitEpic(sourceTrigger(this.host, ticket)) : undefined
-    const mcp = (name: string): boolean => workerMcp(name) || epic !== undefined && splitLinearTool(name) !== undefined
+    const trigger = remote && ticket ? sourceTrigger(this.host, ticket) : undefined
+    const epic = splitEpic(trigger)
+    const admitted = admittedLinearTools(trigger, epic)
+    const admittedLinear = (name: string): boolean => admitted.has(linearTool(name) ?? '')
+    const mcp = (name: string): boolean => workerMcp(name) || admittedLinear(name)
     let mask: { key: string, linear: string[], dispose: () => void } | undefined, building = false
     // An MCP server may register its tools after this Session started, so the mask follows the registry.
     const restrict = () => {
@@ -348,13 +371,16 @@ export class Sessions {
       const key = allow.join('\n')
       if (building || mask?.key === key) return
       const previous = mask
-      const linear = allow.filter(name => splitLinearTool(name) !== undefined)
+      const linear = allow.filter(admittedLinear)
       building = true
       try { mask = { key, linear, dispose: tools.restrict({ allow }) } } finally { building = false }
       previous?.dispose()
+      if (previous && previous.linear.join('\n') === linear.join('\n')) return
       if (epic) {
         this.report('info', 'dsh-superagent built the tools of %s for ticket %s splitting %s; Linear tools: %s', agent.id, ticketId, epic[0],
           linear.join(', ') || 'none yet')
+      } else if (admitted.size) {
+        this.report('info', 'dsh-superagent built the tools of %s for Linear ticket %s; Linear tools: %s', agent.id, ticketId, linear.join(', ') || 'none yet')
       }
     }
     restrict()
@@ -373,7 +399,7 @@ export class Sessions {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
-    ...epic ? [tools.guard(createUnder(epic))] : []]
+    ...epic ? [tools.guard(createUnder(epic))] : [], ...admitted.size ? [tools.guard(imageUploadOnly)] : []]
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's
