@@ -25,7 +25,8 @@ Do not scan old history to backfill acknowledgements.
 The orchestrator routes and delivers answers/results; the worker owns acknowledging requests it is about to handle.
 Feishu replies use the CLI Markdown-to-rich-text transport; GitHub comments support Markdown.
 100 words is a hard ceiling, not a writing target.
-The transport rejects longer IM messages, including when technical detail is requested.
+The host rejects a longer Feishu IM reply, and a longer acknowledgement on any channel, including when technical detail is requested.
+Linear and GitHub replies are not rejected at that length, but hold them to the same ceiling.
 Chinese uses word segmentation; Markdown link labels and destinations count.
 Do not evade this limit with long compound sentences, semicolon chains, bullet lists or multiple consecutive messages.
 Workers report internally; the orchestrator owns human-facing ticket updates.

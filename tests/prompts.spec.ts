@@ -57,6 +57,12 @@ it('assembles every role from fixed sections around the team sections, whatever 
   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
 })
 
+it('scopes the 100-word rejection to Feishu replies and acknowledgements, keeping other replies to the same ceiling', () => {
+  expect(guides.replies).toContain('The host rejects a longer Feishu IM reply, and a longer acknowledgement on any channel')
+  expect(guides.replies).toContain('Linear and GitHub replies are not rejected at that length, but hold them to the same ceiling.')
+  expect(guides.replies).not.toContain('The transport rejects longer IM messages')
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.
