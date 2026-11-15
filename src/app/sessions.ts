@@ -73,19 +73,28 @@ const workerMcp = (name: string): boolean => WORKER_MCP_PREFIXES.some(prefix => 
 const SPLIT_LINEAR_TOOLS = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue']
 /** The Linear MCP tool any worker of a Linear ticket may use, to embed screenshots in its reply. */
 const UPLOAD_LINEAR_TOOL = 'prepare_file_upload'
+/** The Linear MCP tools a worker of a Linear ticket that does not split may use to read its own issue, by the argument naming it. */
+const OWN_ISSUE_TOOLS: ReadonlyMap<string, string> = new Map([['get_issue', 'id'], ['list_comments', 'issueId']])
+/** The other parents `list_comments` takes, which an own-issue read must not name. */
+const OTHER_COMMENT_PARENTS = ['projectId', 'initiativeId', 'documentId', 'milestoneId', 'statusUpdateId']
 /** LiteLLM's `linear_app` server names its tools `linear_app-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
 const LINEAR_TOOL = /^mcp__linear__(?:linear_app-)?([A-Za-z0-9_]+)$/
 /** The Linear tool a public tool name stands for, such as `save_issue`. */
 const linearTool = (name: string): string | undefined => LINEAR_TOOL.exec(name)?.[1]
-/** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
-function splitEpic(trigger: Trigger | undefined): string[] | undefined {
-  if (trigger?.source !== 'linear' || trigger.meta.mode !== 'split') return undefined
+/** The issue a ticket's origin Trigger names, by its Linear identifier and id, when that Trigger came from Linear. */
+function linearIssue(trigger: Trigger | undefined): string[] | undefined {
+  if (trigger?.source !== 'linear') return undefined
   return [trigger.meta.identifier, trigger.meta.issue].filter((value): value is string => typeof value === 'string' && value !== '')
 }
+/** The epic a ticket splits, by its Linear id and identifier, when its origin Trigger is a Linear epic in split mode. */
+function splitEpic(trigger: Trigger | undefined): string[] | undefined {
+  return trigger?.meta.mode === 'split' ? linearIssue(trigger) : undefined
+}
 /** The Linear tools a worker may use by its ticket's origin Trigger: none unless it came from Linear. */
-function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined): ReadonlySet<string> {
+function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined, own: readonly string[] | undefined): ReadonlySet<string> {
   if (trigger?.source !== 'linear') return new Set()
-  return new Set([...epic ? SPLIT_LINEAR_TOOLS : [], UPLOAD_LINEAR_TOOL])
+  const reads = !epic && own?.length ? [...OWN_ISSUE_TOOLS.keys()] : []
+  return new Set([...epic ? SPLIT_LINEAR_TOOLS : [], ...reads, UPLOAD_LINEAR_TOOL])
 }
 const UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
@@ -109,6 +118,18 @@ function createUnder(epic: readonly string[]) {
     if (args.id !== undefined) return `Only new sub-issues of ${label} may be created; updating an issue is refused`
     const parent = typeof args.parentId === 'string' ? args.parentId.toLowerCase() : undefined
     return parent !== undefined && epic.some(value => value.toLowerCase() === parent) ? undefined : `Only sub-issues of ${label} may be created`
+  }
+}
+/** Refuses a `get_issue` or `list_comments` call that does not name `issue`. */
+function ownIssueOnly(issue: readonly string[]) {
+  const reason = `Only ${issue[0] ?? 'the ticket\'s issue'} may be read: pass its id or identifier as get_issue's id or list_comments' issueId`
+  return ({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined => {
+    const field = OWN_ISSUE_TOOLS.get(linearTool(name) ?? '')
+    if (field === undefined) return undefined
+    const args = (input ?? {}) as Record<string, unknown>
+    if (OTHER_COMMENT_PARENTS.some(parent => args[parent] !== undefined)) return reason
+    const value = args[field]
+    return typeof value === 'string' && issue.some(own => own.toLowerCase() === value.toLowerCase()) ? undefined : reason
   }
 }
 /** Refuses tools outside `allowed`, including ones a host registers on each agent, which `restrict` cannot mask. */
@@ -346,7 +367,8 @@ export class Sessions {
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
    * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent; a ticket
-   * splitting a Linear epic also gets the split's Linear tools, and any Linear ticket's worker gets `prepare_file_upload` for images.
+   * splitting a Linear epic also gets the split's Linear tools, any other Linear ticket's worker `get_issue` and `list_comments` on its
+   * own issue, and any Linear ticket's worker gets `prepare_file_upload` for images.
    */
   private workOnly(agent: Agent, ticketId: string, own: readonly string[] = [], worker = false): (() => void)[] {
     const store = this.host.store
@@ -356,7 +378,8 @@ export class Sessions {
     const ticket = store.tickets.get(ticketId)
     const trigger = remote && ticket ? sourceTrigger(this.host, ticket) : undefined
     const epic = splitEpic(trigger)
-    const admitted = admittedLinearTools(trigger, epic)
+    const issue = linearIssue(trigger)
+    const admitted = admittedLinearTools(trigger, epic, issue)
     const admittedLinear = (name: string): boolean => admitted.has(linearTool(name) ?? '')
     const mcp = (name: string): boolean => workerMcp(name) || admittedLinear(name)
     let mask: { key: string, linear: string[], dispose: () => void } | undefined, building = false
@@ -394,7 +417,8 @@ export class Sessions {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
-    ...epic ? [tools.guard(createUnder(epic))] : [], ...admitted.size ? [tools.guard(imageUploadOnly)] : []]
+    ...epic ? [tools.guard(createUnder(epic))] : [], ...!epic && issue?.length ? [tools.guard(ownIssueOnly(issue))] : [],
+    ...admitted.size ? [tools.guard(imageUploadOnly)] : []]
   }
   /**
    * A subagent of an Executor Session, or of one of its subagents, which runs under DSH's `standard` preset with the worker's

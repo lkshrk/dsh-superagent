@@ -312,23 +312,29 @@ describe('the Linear tools of a worker splitting an epic', () => {
     mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'linear', id: 'alice' }, scope: '' },
     createdAt: '', updatedAt: '', origin: { triggerId: origin, triggerIds: [origin] },
     ...ended ? { ended: { at: '2026-11-13T00:00:00Z', by: 'person', outcome: 'stopped' } } : {} }) as unknown as Ticket
-  const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended' }
+  const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended', endedPlain: 'linear:ended-plain', bare: 'linear:bare' }
   const UNLINKED = GLOBAL.filter(name => !name.startsWith('mcp__linear__'))
   async function start(globalTools: string[] = [...UNLINKED, ...LINEAR], realTools = false): Promise<void> {
     h = await startRuntime(store => {
       store.triggers.save(trigger('t-split', 'linear', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
       store.triggers.save(trigger('t-plain', 'linear', { issue: EPIC, identifier: 'ROU-592' }))
       store.triggers.save(trigger('t-github', 'github', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
+      store.triggers.save(trigger('t-bare', 'linear', {}))
       store.tickets.save(ticket(tickets.split, 't-split'))
       store.tickets.save(ticket(tickets.plain, 't-plain'))
       store.tickets.save(ticket(tickets.github, 't-github'))
       store.tickets.save(ticket(tickets.ended, 't-split', true))
+      store.tickets.save(ticket(tickets.endedPlain, 't-plain', true))
+      store.tickets.save(ticket(tickets.bare, 't-bare'))
     }, { globalTools, machine: { remoteWorkers: true }, without: ['permissionPresets'], realTools })
     for (const id of Object.values(tickets)) await subagent(`worker-${id}`, undefined)
   }
   const call = (sessionId: string, name: string, args: unknown = {}) =>
     vi.mocked(toolsOf(sessionId).guard).mock.calls.map(([guard]) => guard({ name, arguments: args })).find(reason => reason !== undefined)
   const READS = LINEAR.slice(0, 5)
+  const OWN_READS = ['mcp__linear__get_issue', 'mcp__linear__list_comments']
+  const NOT_OWN = LINEAR.filter(name => !OWN_READS.includes(name))
+  const OWN_ONLY = 'Only ROU-592 may be read: pass its id or identifier as get_issue\'s id or list_comments\' issueId'
   const UPLOAD_TYPE = 'Only image/png, image/jpeg, image/webp uploads are allowed'
   const UPLOAD_SIZE = 'Upload size must be a whole number of bytes from 1 to 10 MiB'
   const UPLOAD_NAME = 'Upload filename must be 1 to 200 characters, not only blanks, without /, \\ or NUL'
@@ -346,6 +352,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
     for (const id of [worker, 'split-child']) {
       expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...LINEAR.slice(0, 6)])
       expect(READS.map(name => call(id, name))).toEqual(READS.map(() => undefined))
+      expect([call(id, 'mcp__linear__get_issue', { id: 'ROU-701' }), call(id, 'mcp__linear__list_comments', { issueId: 'ROU-701' })]).toEqual([undefined, undefined])
       for (const parentId of [EPIC, EPIC.toUpperCase(), 'ROU-592', 'rou-592']) {
         expect(call(id, 'mcp__linear__save_issue', { title: 'Part', team: 'ROU', parentId })).toBeUndefined()
       }
@@ -360,17 +367,46 @@ describe('the Linear tools of a worker splitting an epic', () => {
     }
   })
 
-  it('refuses every Linear tool to other workers, their subagents, an ended ticket\'s worker and the main Session', async () => {
+  it('lets any other Linear worker and its subagents read only their own issue and its comments', async () => {
     await start()
     await subagent('plain-child', `worker-${tickets.plain}`)
-    for (const id of [`worker-${tickets.plain}`, 'plain-child', `worker-${tickets.github}`]) {
+    for (const id of [`worker-${tickets.plain}`, 'plain-child']) {
+      expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...OWN_READS])
+      for (const own of [EPIC, EPIC.toUpperCase(), 'ROU-592', 'rou-592']) {
+        expect(call(id, 'mcp__linear__get_issue', { id: own, includeRelations: true })).toBeUndefined()
+        expect(call(id, 'mcp__linear__list_comments', { issueId: own, limit: 50 })).toBeUndefined()
+      }
+      for (const args of [{ id: 'ROU-593' }, { id: '' }, { id: 592 }, { issueId: 'ROU-592' }, {}, undefined]) {
+        expect(call(id, 'mcp__linear__get_issue', args)).toBe(OWN_ONLY)
+      }
+      for (const args of [{ issueId: 'ROU-593' }, { issueId: 592 }, { id: 'ROU-592' }, { projectId: 'P-ROU-1' }, { issueId: 'ROU-592', projectId: 'P-ROU-1' },
+        { issueId: 'ROU-592', documentId: 'doc' }, {}, undefined]) {
+        expect(call(id, 'mcp__linear__list_comments', args)).toBe(OWN_ONLY)
+      }
+      expect(NOT_OWN.map(name => call(id, name, { id: 'ROU-592', parentId: 'ROU-592' }))).toEqual(NOT_OWN.map(denied))
+    }
+  })
+
+  it('gives no Linear reads to a Linear worker whose Trigger names no issue', async () => {
+    await start()
+    const worker = `worker-${tickets.bare}`
+    expect(allowed(worker)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs'])
+    expect(LINEAR.map(name => call(worker, name, { id: 'ROU-592', issueId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+  })
+
+  it('refuses every Linear tool to GitHub workers, their subagents, an ended ticket\'s worker and the main Session', async () => {
+    await start()
+    await subagent('github-child', `worker-${tickets.github}`)
+    for (const id of [`worker-${tickets.github}`, 'github-child']) {
       expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs'])
-      expect(LINEAR.map(name => call(id, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+      expect(LINEAR.map(name => call(id, name, { id: 'ROU-592', issueId: 'ROU-592', parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
       expect(['mcp__searxng__web_search', 'mcp__context7__query_docs'].map(name => call(id, name))).toEqual([undefined, undefined])
     }
     const ended = 'Ticket ended; new work needs a new authorized ticket'
-    expect([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(name => call(`worker-${tickets.ended}`, name, { parentId: 'ROU-592' })))
-      .toEqual([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(() => ended))
+    for (const id of [`worker-${tickets.ended}`, `worker-${tickets.endedPlain}`]) {
+      expect([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(name => call(id, name, { id: 'ROU-592', issueId: 'ROU-592', parentId: 'ROU-592' })))
+        .toEqual([...LINEAR, 'mcp__searxng__web_search', 'bash'].map(() => ended))
+    }
     const master = h!.runtime.masterId
     expect(allowed(master).some(name => name.startsWith('mcp__'))).toBe(false)
     expect(LINEAR.map(name => call(master, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
@@ -410,10 +446,15 @@ describe('the Linear tools of a worker splitting an epic', () => {
         expect(reason(id, LITELLM[5]!, { id: 'ROU-700', parentId: 'ROU-592' })).toBe('Only new sub-issues of ROU-592 may be created; updating an issue is refused')
         expect([LITELLM[6]!, 'list_mcp_resources'].map(name => reason(id, name))).toEqual([denied(LITELLM[6]!), denied('list_mcp_resources')])
       }
-      for (const id of [`worker-${tickets.plain}`, `worker-${tickets.github}`]) {
-        expect(mcpOf(id)).toEqual([...SEARCH, 'mcp__context7__context7-query-docs'])
-        expect(LITELLM.map(name => reason(id, name, { parentId: 'ROU-592' }))).toEqual(LITELLM.map(denied))
-      }
+      const plain = `worker-${tickets.plain}`
+      const ownReads = [LITELLM[0]!, LITELLM[2]!]
+      expect(mcpOf(plain)).toEqual([...SEARCH, ...ownReads, 'mcp__context7__context7-query-docs'])
+      expect([reason(plain, LITELLM[0]!, { id: 'ROU-592' }), reason(plain, LITELLM[2]!, { issueId: EPIC })]).toEqual([undefined, undefined])
+      expect([reason(plain, LITELLM[0]!, { id: 'ROU-1' }), reason(plain, LITELLM[2]!, {})]).toEqual([OWN_ONLY, OWN_ONLY])
+      const others = LITELLM.filter(name => !ownReads.includes(name))
+      expect(others.map(name => reason(plain, name, { id: 'ROU-592', parentId: 'ROU-592' }))).toEqual(others.map(denied))
+      expect(mcpOf(`worker-${tickets.github}`)).toEqual([...SEARCH, 'mcp__context7__context7-query-docs'])
+      expect(LITELLM.map(name => reason(`worker-${tickets.github}`, name, { id: 'ROU-592', parentId: 'ROU-592' }))).toEqual(LITELLM.map(denied))
       const master = h!.runtime.masterId
       expect(mcpOf(master)).toEqual([])
       expect(LITELLM.map(name => reason(master, name, { parentId: 'ROU-592' }))).toEqual(LITELLM.map(denied))
@@ -423,8 +464,10 @@ describe('the Linear tools of a worker splitting an epic', () => {
       expect(mcpOf(worker)).toEqual(LITELLM.slice(0, 6))
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: none yet`)
       expect(logs).toContain(`info: dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}`)
-      expect(stderr.filter(line => line.includes(`worker-${tickets.plain}`)))
-        .toEqual([`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: none yet\n`])
+      const plainLines = stderr.filter(line => line.includes(`worker-${tickets.plain}`))
+      expect([plainLines[0], plainLines.at(-1)]).toEqual([
+        `dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: none yet\n`,
+        `dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${ownReads.join(', ')}\n`])
       expect(stderr.filter(line => line.includes(`worker-${tickets.github}`))).toEqual([])
       expect(stderr).toContain(`dsh-superagent built the tools of ${worker} for ticket ${tickets.split} splitting ROU-592; Linear tools: ${LITELLM.slice(0, 6).join(', ')}\n`)
     })
@@ -436,7 +479,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
       connect([...LITELLM, upload!])
       expect(mcpOf(`worker-${tickets.split}`)).toEqual([...LITELLM.slice(0, 6), upload])
       for (const id of [`worker-${tickets.plain}`, 'plain-child']) {
-        expect(mcpOf(id)).toEqual([upload])
+        expect(mcpOf(id)).toEqual([LITELLM[0], LITELLM[2], upload])
         expect(reason(id, upload!, { filename: 'shot.png', contentType: 'image/png', size: 2048 })).toBeUndefined()
         expect(reason(id, upload!, { filename: 'shot.svg', contentType: 'image/svg+xml', size: 2048 })).toBe(UPLOAD_TYPE)
       }
@@ -444,8 +487,9 @@ describe('the Linear tools of a worker splitting an epic', () => {
         expect(mcpOf(id)).toEqual([])
         expect(reason(id, upload!, { filename: 'shot.png', contentType: 'image/png', size: 2048 })).toBe(denied(upload!))
       }
-      expect(logs).toContain(`info: dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${upload}`)
-      expect(stderr).toContain(`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${upload}\n`)
+      const plainTools = [LITELLM[0], LITELLM[2], upload].join(', ')
+      expect(logs).toContain(`info: dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${plainTools}`)
+      expect(stderr).toContain(`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${plainTools}\n`)
     })
 
     it('admits Linear tools by their bare and linear_app- names only, refusing another server\'s prefix', async () => {
@@ -498,13 +542,13 @@ describe('the Linear tools of a worker splitting an epic', () => {
     const WITH_UPLOAD = [...UNLINKED, ...LINEAR, ...UPLOADS]
     const IMAGE = { filename: 'screenshot.png', contentType: 'image/png', size: 4096 }
 
-    it('admits only prepare_file_upload, by its bare and prefixed names, to a Linear worker that does not split, and its subagent', async () => {
+    it('admits prepare_file_upload, by its bare and prefixed names, beside its own reads to a Linear worker that does not split, and its subagent', async () => {
       await start(WITH_UPLOAD)
       await subagent('plain-child', `worker-${tickets.plain}`)
       for (const id of [`worker-${tickets.plain}`, 'plain-child']) {
-        expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...UPLOADS])
+        expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...OWN_READS, ...UPLOADS])
         expect(UPLOADS.map(name => call(id, name, IMAGE))).toEqual([undefined, undefined])
-        expect(LINEAR.map(name => call(id, name, { parentId: 'ROU-592' }))).toEqual(LINEAR.map(denied))
+        expect(NOT_OWN.map(name => call(id, name, { parentId: 'ROU-592' }))).toEqual(NOT_OWN.map(denied))
       }
     })
 
