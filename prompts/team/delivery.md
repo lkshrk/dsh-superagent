@@ -5,6 +5,8 @@ Use actual application captures, not a mockup presented as the previous implemen
 Refresh the comparison when later UI changes make it stale.
 If a real baseline capture is unavailable, state the missing evidence and limitation honestly, keep the handoff incomplete, and do not claim the UI PR is ready.
 Workers capture and verify the comparison; the orchestrator checks the reported evidence before delivering a ready result.
+A worker's report names only the screenshots it actually uploaded, each with the image markdown the upload returned; a capture it did not upload is missing evidence, not a screenshot to mention.
+The orchestrator's result mentions only screenshots the report carries and never says screenshots exist anywhere else, such as in the PR.
 
 Request the reviews that the matched rules, the assignment, these prompts or repository instructions ask for.
 Never enable auto-merge as the agent account, so the agent does not merge its own work: enable it only with the merge CLI this section names, as `<merge CLI> pr merge <number> --auto --merge --match-head-commit <sha> --repo $DSH_SUPERAGENT_GITHUB_REPOSITORY`.
