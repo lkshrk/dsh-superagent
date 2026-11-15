@@ -43,7 +43,7 @@ Shutdown cancels turns, waits for passes, effects and agents, restores the proce
 
 ### Engine
 
-`Engine` (`src/core/engine.ts`) is the only writer of Triggers, Threads, Decisions, Tickets and Assignments. It receives these ports from `src/core/ports.ts`: `Repositories`, a current-Policy getter, `SourceScope`, `Assessor`, `Executor` and `Outbox`. Optional dependencies are `prepareTicket`, `prepareResult`, `now` and `emit`. The Runtime's `prepareResult` is `resultText` (`src/app/report-images.ts`): a Linear result carries the Linear upload images of the ticket's latest ready report as embedded images.
+`Engine` (`src/core/engine.ts`) is the only writer of Triggers, Threads, Decisions, Tickets and Assignments. It receives these ports from `src/core/ports.ts`: `Repositories`, a current-Policy getter, `SourceScope`, `Assessor`, `Executor` and `Outbox`. Optional dependencies are `prepareTicket`, `prepareResult`, `now` and `emit`. The Runtime's `prepareResult` is `resultText` (`src/app/report-images.ts`): a Linear result carries the Linear upload images of the ticket's latest ready report as embedded images, appended after its text.
 
 All Engine methods are synchronous. Each command changes its aggregates in one transaction. `evaluateDue` uses a separate transaction for each Eval or Ticket it changes. Ports enqueue external work inside the transaction; adapters perform it after commit. Invalid requests throw `UserError`.
 
@@ -336,7 +336,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/sessions.ts` | Sessions |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/report.ts` | `report`: an operator log line to the plugin logger and to stderr, which dsh-yawn's container log shows |
-| `src/app/report-images.ts` | `resultText`, the Engine's `prepareResult`: embeds the upload images of a ticket's latest ready report in its Linear result |
+| `src/app/report-images.ts` | `resultText`, the Engine's `prepareResult`: appends the upload images of a ticket's latest ready report that its Linear result does not embed |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
@@ -423,7 +423,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
-| `tests/report-images.spec.ts` | A Linear result keeps the ready report's upload images: links (also angle-bracket, titled, bracketed labels) become unsigned images, missing ones are appended once per upload path, fenced code and other channels stay unchanged |
+| `tests/report-images.spec.ts` | A Linear result keeps the ready report's upload images: links stay links, report images the reply does not embed are appended as unsigned images once per upload path, fenced code and other channels stay unchanged |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
 | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |

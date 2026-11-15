@@ -7,26 +7,23 @@ const upload = (name: string, signature = 'a') => `${path(name)}?signature=${sig
 const report = `Ready: [PR #7](https://github.com/o/r/pull/7).\n\n![before](${upload('before')})\n[after](${upload('after')})`
 
 describe('withReportImages', () => {
-  it('embeds a plain link to a report image, without its signature', () => {
-    expect(withReportImages(`[PR #7](https://github.com/o/r/pull/7) is ready: [before](${upload('before', 'b')}), ![after](${upload('after', 'b')})`, report))
-      .toBe(`[PR #7](https://github.com/o/r/pull/7) is ready: ![before](${path('before')}), ![after](${path('after')})`)
+  it('leaves inline links as they are and appends their images as a block, in report order', () => {
+    const text = `Screenshots: [before](${upload('before', 'b')}), [after](${upload('after', 'b')}).`
+    expect(withReportImages(text, report)).toBe(`${text}\n\n![before](${path('before')})\n\n![after](${path('after')})`)
   })
-  it('appends report images the reply leaves out, once per upload path', () => {
-    expect(withReportImages(`Ready: ![before](${upload('before', 'z')})`, `${report}\n![after again](${upload('after', 'c')})`))
-      .toBe(`Ready: ![before](${path('before')})\n\n![after](${path('after')})`)
+  it('does not append an image the reply already embeds, and drops the signature of that embed', () => {
+    expect(withReportImages(`Ready: [PR](https://github.com/o/r/pull/7)\n\n![after](${upload('after', 'z')})`, `${report}\n![after again](${upload('after', 'c')})`))
+      .toBe(`Ready: [PR](https://github.com/o/r/pull/7)\n\n![after](${path('after')})\n\n![before](${path('before')})`)
   })
-  it('reads angle-bracket links in the reply and in the report', () => {
-    expect(withReportImages(`Ready: [before](<${upload('before', 'y')}>)`, report)).toBe(`Ready: ![before](${path('before')})\n\n![after](${path('after')})`)
-    expect(withReportImages('Ready.', `![before](<${upload('before')}>) [after]( <${upload('after')}> )`))
+  it('reads angle-bracket, titled and bracket-labelled links in the reply and in the report', () => {
+    expect(withReportImages(`Ready.\n\n![before](<${upload('before', 'y')}> "Before")\n\n![shot [2]](${upload('after', 'y')})`, report))
+      .toBe(`Ready.\n\n![before](${path('before')})\n\n![shot [2]](${path('after')})`)
+    expect(withReportImages('Ready.', `![before](<${upload('before')}>) [after]( <${upload('after')}> "After")`))
       .toBe(`Ready.\n\n![before](${path('before')})\n\n![after](${path('after')})`)
   })
-  it('reads links with a title or a bracketed label', () => {
-    expect(withReportImages(`Ready: [before](${upload('before', 'y')} "Before") and [shot [2]](${upload('after', 'y')})`, report))
-      .toBe(`Ready: ![before](${path('before')}) and ![shot [2]](${path('after')})`)
-  })
-  it('appends nothing for an upload the reply already shows in a form it cannot rewrite', () => {
-    expect(withReportImages(`Ready: <img src="${upload('before', 'y')}"> ![after](${path('after')})`, report))
-      .toBe(`Ready: <img src="${upload('before', 'y')}"> ![after](${path('after')})`)
+  it('counts only embedded images as shown, not links or bare URLs', () => {
+    const text = `Ready: <${upload('before', 'y')}> and [after](<${upload('after', 'y')}>)`
+    expect(withReportImages(text, report)).toBe(`${text}\n\n![before](${path('before')})\n\n![after](${path('after')})`)
   })
   it('leaves fenced code alone and does not count an upload shown only there', () => {
     const code = `\`\`\`\n[before](${upload('before', 'y')})\n\`\`\``

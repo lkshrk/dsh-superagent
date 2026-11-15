@@ -3,7 +3,6 @@ import type { ChannelRef, Ticket } from '../core/index.ts'
 
 const UPLOAD = String.raw`https:\/\/uploads\.linear\.app\/[^)\s>"]+`
 const LINK = new RegExp(String.raw`(!?)\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*<?(${UPLOAD})>?(?:\s+"[^"]*")?\s*\)`, 'g')
-const BARE = new RegExp(UPLOAD, 'g')
 const FENCE = /^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[^\n]*$/gm
 /** Linear signs upload URLs per read; the bare path is the stored URL every signed-in viewer can load. */
 const canonical = (url: string): string => { const { origin, pathname } = new URL(url); return origin + pathname }
@@ -18,7 +17,7 @@ function prose(text: string, rewrite: (part: string) => string): string {
   return out + rewrite(text.slice(at))
 }
 
-/** Embeds the report's upload images in `text`: a link to one becomes an image, and one `text` does not show is appended. */
+/** Appends the report's upload images `text` does not embed yet; links stay links, since an image is its own block on Linear. */
 export function withReportImages(text: string, report: string): string {
   const images = new Map<string, string>()
   prose(report, part => {
@@ -30,10 +29,12 @@ export function withReportImages(text: string, report: string): string {
   })
   if (!images.size) return text
   const shown = new Set<string>()
-  const embedded = prose(text, part => {
-    for (const [url] of part.matchAll(BARE)) shown.add(canonical(url))
-    return part.replace(LINK, (link, _bang, label: string, url: string) => images.has(canonical(url)) ? `![${label}](${canonical(url)})` : link)
-  })
+  const embedded = prose(text, part => part.replace(LINK, (link, bang: string, label: string, url: string) => {
+    const image = canonical(url)
+    if (!bang || !images.has(image)) return link
+    shown.add(image)
+    return `![${label}](${image})`
+  }))
   const missing = [...images].filter(([image]) => !shown.has(image)).map(([, markdown]) => markdown)
   return missing.length ? `${embedded}\n\n${missing.join('\n\n')}` : embedded
 }
