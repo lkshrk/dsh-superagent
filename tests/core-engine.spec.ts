@@ -11,8 +11,9 @@ function trigger(id: string, overrides: Partial<Trigger> = {}): Trigger {
 interface Hooks {
   emit?: (event: { type: string; data: Record<string, unknown> }) => void
   prepareTicket?: EngineOptions['prepareTicket']
+  prepareResult?: EngineOptions['prepareResult']
 }
-function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }: Hooks = {}) {
+function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, prepareResult }: Hooks = {}) {
   const repo = new MemoryRepositories()
   const outbox: OutboundMessage[] = []
   const withdrawn: string[] = []
@@ -42,7 +43,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
     withdraw: id => { withdrawn.push(id) },
   }
   const engine = new Engine({ repo, scope, policy: () => policy, assessor, executor, outbox: queued,
-    ...emit ? { emit } : {}, ...prepareTicket ? { prepareTicket } : {}, now: () => new Date(Date.UTC(2026, 8, 23, 0, 0, clock)).toISOString() })
+    ...emit ? { emit } : {}, ...prepareTicket ? { prepareTicket } : {}, ...prepareResult ? { prepareResult } : {}, now: () => new Date(Date.UTC(2026, 8, 23, 0, 0, clock)).toISOString() })
   /** Simulate the executor starting queued assignments (unless `launch` is false) and delivering pending ticket inputs. */
   function settle({ launch = true } = {}) {
     for (;;) {
@@ -1048,6 +1049,15 @@ describe('replies', () => {
     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
     expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Done' })).toMatchObject({ status: 'pending' })
     expect(h.outbox.at(-1)!.channel).toEqual(trigger('1').channel)
+  })
+  it('lets the host rewrite a result for its channel, keeping the id of the text the orchestrator sent', () => {
+    const h = harness({}, { prepareResult: (ticket, channel, text) => `${text} [${ticket.id}@${channel.source}]` })
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+    const reply = h.engine.reply({ purpose: 'result', ticketId, text: 'Done' })
+    expect(h.outbox.at(-1)).toMatchObject({ id: reply.id, text: `Done [${ticketId}@chat]` })
+    expect(reply.id).toBe(key('reply', ticketId, 'Done'))
+    expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Done' })).toMatchObject({ reused: true })
   })
 })
 describe('ticket commands', () => {

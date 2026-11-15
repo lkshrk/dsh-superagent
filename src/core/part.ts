@@ -1,7 +1,7 @@
 /** Shared base class and configuration for Engine domain parts. */
 import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
-import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { ChannelRef, Thread, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
 
 export interface EngineOptions {
@@ -13,6 +13,8 @@ export interface EngineOptions {
   executor: Executor
   outbox: Outbox
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
+  /** Rewrites a ticket's result for the Channel it goes to; the message keeps the id of the text it was asked to send. */
+  prepareResult?: (ticket: Ticket, channel: ChannelRef, text: string) => string
   now?: () => string
   emit?: (event: DomainEvent) => void
 }
