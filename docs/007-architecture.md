@@ -423,7 +423,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
-| `tests/report-images.spec.ts` | A Linear result keeps the ready report's upload images: links become images, missing ones are appended once per upload path, other channels stay unchanged |
+| `tests/report-images.spec.ts` | A Linear result keeps the ready report's upload images: links (also angle-bracket, titled, bracketed labels) become unsigned images, missing ones are appended once per upload path, fenced code and other channels stay unchanged |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
 | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
