@@ -80,6 +80,8 @@ const OTHER_COMMENT_PARENTS = ['projectId', 'initiativeId', 'documentId', 'miles
 /** The Linear MCP tool a worker of a Linear ticket that does not split may use to read the documents its own issue links. */
 const DOCUMENT_TOOL = 'get_document'
 const DOCUMENT_ID = /^[0-9a-f]{12}$/i
+/** How many linked documents of a Trigger count, as the Linear Source lists no more. */
+const DOCUMENTS_LIMIT = 20
 /** What `get_document` takes as its id: a document's URL, its `<slug>-<id>` or its bare id; group 1 is the id Linear resolves it by. */
 const DOCUMENT_REFERENCE = /^(?:https:\/\/linear\.app\/[a-z0-9_-]+\/document\/)?(?:[a-z0-9-]*-)?([0-9a-f]{12})$/i
 /** A document's UUID, which Linear resolves before a slug and whose last group has the shape of a slug's id. */
@@ -101,7 +103,7 @@ function splitEpic(trigger: Trigger | undefined): string[] | undefined {
 function linkedDocuments(trigger: Trigger | undefined): string[] {
   const documents = linearIssue(trigger)?.length && !splitEpic(trigger) ? trigger?.meta.documents : undefined
   if (!Array.isArray(documents)) return []
-  return documents.filter((id): id is string => typeof id === 'string' && DOCUMENT_ID.test(id)).map(id => id.toLowerCase())
+  return documents.slice(0, DOCUMENTS_LIMIT).filter((id): id is string => typeof id === 'string' && DOCUMENT_ID.test(id)).map(id => id.toLowerCase())
 }
 /** The Linear tools a worker may use by its ticket's origin Trigger: none unless it came from Linear. */
 function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined, own: readonly string[] | undefined,
