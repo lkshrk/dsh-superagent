@@ -313,9 +313,10 @@ describe('the Linear tools of a worker splitting an epic', () => {
     createdAt: '', updatedAt: '', origin: { triggerId: origin, triggerIds: [origin] },
     ...ended ? { ended: { at: '2026-11-13T00:00:00Z', by: 'person', outcome: 'stopped' } } : {} }) as unknown as Ticket
   const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended', endedPlain: 'linear:ended-plain', bare: 'linear:bare',
-    docs: 'linear:docs', endedDocs: 'linear:ended-docs', noDocs: 'linear:no-docs', badDocs: 'linear:bad-docs' }
+    docs: 'linear:docs', manyDocs: 'linear:many-docs', endedDocs: 'linear:ended-docs', noDocs: 'linear:no-docs', badDocs: 'linear:bad-docs' }
   const DOC = '3f682b79ba44', DOC_2 = '0a1b2c3d4e5f', DOC_SLUG = `valhalla-39-design-upgrade-and-regression-corpus-${DOC}`
   const DOC_URL = `https://linear.app/h-cloud/document/${DOC_SLUG}`
+  const MANY_DOCS = Array.from({ length: 25 }, (_, n) => n < 2 ? n : n.toString(16).padStart(12, '0'))
   const UNLINKED = GLOBAL.filter(name => !name.startsWith('mcp__linear__'))
   async function start(globalTools: string[] = [...UNLINKED, ...LINEAR], realTools = false): Promise<void> {
     h = await startRuntime(store => {
@@ -324,6 +325,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
       store.triggers.save(trigger('t-github', 'github', { mode: 'split', issue: EPIC, identifier: 'ROU-592', documents: [DOC] }))
       store.triggers.save(trigger('t-bare', 'linear', { documents: [DOC] }))
       store.triggers.save(trigger('t-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [DOC, DOC_2.toUpperCase()] }))
+      store.triggers.save(trigger('t-many-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: MANY_DOCS }))
       store.triggers.save(trigger('t-no-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [] }))
       store.triggers.save(trigger('t-bad-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [42, 'ROU-592', `x-${DOC}`, null] }))
       store.tickets.save(ticket(tickets.split, 't-split'))
@@ -333,6 +335,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
       store.tickets.save(ticket(tickets.endedPlain, 't-plain', true))
       store.tickets.save(ticket(tickets.bare, 't-bare'))
       store.tickets.save(ticket(tickets.docs, 't-docs'))
+      store.tickets.save(ticket(tickets.manyDocs, 't-many-docs'))
       store.tickets.save(ticket(tickets.endedDocs, 't-docs', true))
       store.tickets.save(ticket(tickets.noDocs, 't-no-docs'))
       store.tickets.save(ticket(tickets.badDocs, 't-bad-docs'))
@@ -419,6 +422,12 @@ describe('the Linear tools of a worker splitting an epic', () => {
       expect(call(id, 'mcp__linear__get_issue', { id: DOC })).toBe(OWN_ONLY)
       expect(call(id, 'mcp__linear__list_comments', { issueId: 'ROU-592', documentId: DOC })).toBe(OWN_ONLY)
     }
+  })
+
+  it('counts only the first 20 entries of a Trigger\'s linked documents', async () => {
+    await start()
+    const worker = `worker-${tickets.manyDocs}`
+    expect(MANY_DOCS.map(id => call(worker, 'mcp__linear__get_document', { id }))).toEqual(MANY_DOCS.map((_, n) => n >= 2 && n < 20 ? undefined : DOCS_ONLY))
   })
 
   it('gives get_document to no worker whose Trigger carries no valid linked document, as before', async () => {
