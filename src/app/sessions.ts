@@ -77,6 +77,13 @@ const UPLOAD_LINEAR_TOOL = 'prepare_file_upload'
 const OWN_ISSUE_TOOLS: ReadonlyMap<string, string> = new Map([['get_issue', 'id'], ['list_comments', 'issueId']])
 /** The other parents `list_comments` takes, which an own-issue read must not name. */
 const OTHER_COMMENT_PARENTS = ['projectId', 'initiativeId', 'documentId', 'milestoneId', 'statusUpdateId']
+/** The Linear MCP tool a worker of a Linear ticket that does not split may use to read the documents its own issue links. */
+const DOCUMENT_TOOL = 'get_document'
+const DOCUMENT_ID = /^[0-9a-f]{12}$/i
+/** What `get_document` takes as its id: a document's URL, its `<slug>-<id>` or its bare id; group 1 is the id Linear resolves it by. */
+const DOCUMENT_REFERENCE = /^(?:https:\/\/linear\.app\/[a-z0-9_-]+\/document\/)?(?:[a-z0-9-]*-)?([0-9a-f]{12})$/i
+/** A document's UUID, which Linear resolves before a slug and whose last group has the shape of a slug's id. */
+const UUID_TAIL = /(?:^|\/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** LiteLLM's `linear_app` server names its tools `linear_app-<tool>`, which dsh-mcp-client keeps behind `mcp__linear__`. */
 const LINEAR_TOOL = /^mcp__linear__(?:linear_app-)?([A-Za-z0-9_]+)$/
 /** The Linear tool a public tool name stands for, such as `save_issue`. */
@@ -90,10 +97,17 @@ function linearIssue(trigger: Trigger | undefined): string[] | undefined {
 function splitEpic(trigger: Trigger | undefined): string[] | undefined {
   return trigger?.meta.mode === 'split' ? linearIssue(trigger) : undefined
 }
+/** The documents the issue of a ticket that does not split links, by the ids its origin Linear Trigger lists, in lower case. */
+function linkedDocuments(trigger: Trigger | undefined): string[] {
+  const documents = linearIssue(trigger)?.length && !splitEpic(trigger) ? trigger?.meta.documents : undefined
+  if (!Array.isArray(documents)) return []
+  return documents.filter((id): id is string => typeof id === 'string' && DOCUMENT_ID.test(id)).map(id => id.toLowerCase())
+}
 /** The Linear tools a worker may use by its ticket's origin Trigger: none unless it came from Linear. */
-function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined, own: readonly string[] | undefined): ReadonlySet<string> {
+function admittedLinearTools(trigger: Trigger | undefined, epic: readonly string[] | undefined, own: readonly string[] | undefined,
+  documents: readonly string[]): ReadonlySet<string> {
   if (trigger?.source !== 'linear') return new Set()
-  const reads = !epic && own?.length ? [...OWN_ISSUE_TOOLS.keys()] : []
+  const reads = !epic && own?.length ? [...OWN_ISSUE_TOOLS.keys(), ...documents.length ? [DOCUMENT_TOOL] : []] : []
   return new Set([...epic ? SPLIT_LINEAR_TOOLS : [], ...reads, UPLOAD_LINEAR_TOOL])
 }
 const UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp']
@@ -130,6 +144,16 @@ function ownIssueOnly(issue: readonly string[]) {
     if (OTHER_COMMENT_PARENTS.some(parent => args[parent] !== undefined)) return reason
     const value = args[field]
     return typeof value === 'string' && issue.some(own => own.toLowerCase() === value.toLowerCase()) ? undefined : reason
+  }
+}
+/** Refuses a `get_document` call that does not name one of `documents`, which `issue` links. */
+function linkedDocumentsOnly(issue: readonly string[], documents: readonly string[]) {
+  const reason = `Only documents the description of ${issue[0] ?? 'the ticket\'s issue'} links may be read: pass such a link, or the id it ends with, as get_document's id`
+  return ({ name, arguments: input }: { name: string; arguments: unknown }): string | undefined => {
+    if (linearTool(name) !== DOCUMENT_TOOL) return undefined
+    const { id } = (input ?? {}) as { id?: unknown }
+    const named = typeof id === 'string' && !UUID_TAIL.test(id) ? DOCUMENT_REFERENCE.exec(id)?.[1]?.toLowerCase() : undefined
+    return named !== undefined && documents.includes(named) ? undefined : reason
   }
 }
 /** Refuses tools outside `allowed`, including ones a host registers on each agent, which `restrict` cannot mask. */
@@ -368,7 +392,7 @@ export class Sessions {
    * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
    * With `remoteWorkers`, any other tool is refused too, such as the session tools dsh-yawn registers on each agent; a ticket
    * splitting a Linear epic also gets the split's Linear tools, any other Linear ticket's worker `get_issue` and `list_comments` on its
-   * own issue, and any Linear ticket's worker gets `prepare_file_upload` for images.
+   * own issue and `get_document` on the documents that issue links, and any Linear ticket's worker gets `prepare_file_upload` for images.
    */
   private workOnly(agent: Agent, ticketId: string, own: readonly string[] = [], worker = false): (() => void)[] {
     const store = this.host.store
@@ -379,7 +403,8 @@ export class Sessions {
     const trigger = remote && ticket ? sourceTrigger(this.host, ticket) : undefined
     const epic = splitEpic(trigger)
     const issue = linearIssue(trigger)
-    const admitted = admittedLinearTools(trigger, epic, issue)
+    const documents = linkedDocuments(trigger)
+    const admitted = admittedLinearTools(trigger, epic, issue, documents)
     const admittedLinear = (name: string): boolean => admitted.has(linearTool(name) ?? '')
     const mcp = (name: string): boolean => workerMcp(name) || admittedLinear(name)
     let mask: { key: string, linear: string[], dispose: () => void } | undefined, building = false
@@ -418,6 +443,7 @@ export class Sessions {
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     }), ...remote ? [tools.guard(onlyTools(new Set([...WORK_TOOLS, ...own]), mcp))] : [],
     ...epic ? [tools.guard(createUnder(epic))] : [], ...!epic && issue?.length ? [tools.guard(ownIssueOnly(issue))] : [],
+    ...issue && documents.length ? [tools.guard(linkedDocumentsOnly(issue, documents))] : [],
     ...admitted.size ? [tools.guard(imageUploadOnly)] : []]
   }
   /**
