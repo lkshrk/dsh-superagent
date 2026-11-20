@@ -304,28 +304,38 @@ it('refuses every tool of a subagent it cannot place when workers run in remote 
 
 describe('the Linear tools of a worker splitting an epic', () => {
   const EPIC = '2f1d7a0e-5b1c-4c3e-9a63-0d7b1e4f8a21'
-  const LINEAR = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment', 'delete_comment']
-    .map(name => `mcp__linear__${name}`)
+  const LINEAR = ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment', 'delete_comment',
+    'get_document', 'list_documents'].map(name => `mcp__linear__${name}`)
   const trigger = (id: string, source: string, meta: Record<string, unknown>) => ({ id, source, threads: [{ source, id }], actor: { source, id: 'alice' },
     human: true, at: '2026-11-13T00:00:00Z', text: 'split it', meta }) as Trigger
   const ticket = (id: string, origin: string, ended?: boolean) => ({ id, title: id, decisionId: `d-${id}`, channels: [], assignments: [], inputs: [], undelivered: [],
     mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'linear', id: 'alice' }, scope: '' },
     createdAt: '', updatedAt: '', origin: { triggerId: origin, triggerIds: [origin] },
     ...ended ? { ended: { at: '2026-11-13T00:00:00Z', by: 'person', outcome: 'stopped' } } : {} }) as unknown as Ticket
-  const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended', endedPlain: 'linear:ended-plain', bare: 'linear:bare' }
+  const tickets = { split: 'linear:split', plain: 'linear:plain', github: 'github:split', ended: 'linear:ended', endedPlain: 'linear:ended-plain', bare: 'linear:bare',
+    docs: 'linear:docs', endedDocs: 'linear:ended-docs', noDocs: 'linear:no-docs', badDocs: 'linear:bad-docs' }
+  const DOC = '3f682b79ba44', DOC_2 = '0a1b2c3d4e5f', DOC_SLUG = `valhalla-39-design-upgrade-and-regression-corpus-${DOC}`
+  const DOC_URL = `https://linear.app/h-cloud/document/${DOC_SLUG}`
   const UNLINKED = GLOBAL.filter(name => !name.startsWith('mcp__linear__'))
   async function start(globalTools: string[] = [...UNLINKED, ...LINEAR], realTools = false): Promise<void> {
     h = await startRuntime(store => {
-      store.triggers.save(trigger('t-split', 'linear', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
+      store.triggers.save(trigger('t-split', 'linear', { mode: 'split', issue: EPIC, identifier: 'ROU-592', documents: [DOC] }))
       store.triggers.save(trigger('t-plain', 'linear', { issue: EPIC, identifier: 'ROU-592' }))
-      store.triggers.save(trigger('t-github', 'github', { mode: 'split', issue: EPIC, identifier: 'ROU-592' }))
-      store.triggers.save(trigger('t-bare', 'linear', {}))
+      store.triggers.save(trigger('t-github', 'github', { mode: 'split', issue: EPIC, identifier: 'ROU-592', documents: [DOC] }))
+      store.triggers.save(trigger('t-bare', 'linear', { documents: [DOC] }))
+      store.triggers.save(trigger('t-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [DOC, DOC_2.toUpperCase()] }))
+      store.triggers.save(trigger('t-no-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [] }))
+      store.triggers.save(trigger('t-bad-docs', 'linear', { issue: EPIC, identifier: 'ROU-592', documents: [42, 'ROU-592', `x-${DOC}`, null] }))
       store.tickets.save(ticket(tickets.split, 't-split'))
       store.tickets.save(ticket(tickets.plain, 't-plain'))
       store.tickets.save(ticket(tickets.github, 't-github'))
       store.tickets.save(ticket(tickets.ended, 't-split', true))
       store.tickets.save(ticket(tickets.endedPlain, 't-plain', true))
       store.tickets.save(ticket(tickets.bare, 't-bare'))
+      store.tickets.save(ticket(tickets.docs, 't-docs'))
+      store.tickets.save(ticket(tickets.endedDocs, 't-docs', true))
+      store.tickets.save(ticket(tickets.noDocs, 't-no-docs'))
+      store.tickets.save(ticket(tickets.badDocs, 't-bad-docs'))
     }, { globalTools, machine: { remoteWorkers: true }, without: ['permissionPresets'], realTools })
     for (const id of Object.values(tickets)) await subagent(`worker-${id}`, undefined)
   }
@@ -335,6 +345,7 @@ describe('the Linear tools of a worker splitting an epic', () => {
   const OWN_READS = ['mcp__linear__get_issue', 'mcp__linear__list_comments']
   const NOT_OWN = LINEAR.filter(name => !OWN_READS.includes(name))
   const OWN_ONLY = 'Only ROU-592 may be read: pass its id or identifier as get_issue\'s id or list_comments\' issueId'
+  const DOCS_ONLY = 'Only documents the description of ROU-592 links may be read: pass such a link, or the id it ends with, as get_document\'s id'
   const UPLOAD_TYPE = 'Only image/png, image/jpeg, image/webp uploads are allowed'
   const UPLOAD_SIZE = 'Upload size must be a whole number of bytes from 1 to 10 MiB'
   const UPLOAD_NAME = 'Upload filename must be 1 to 200 characters, not only blanks, without /, \\ or NUL'
@@ -387,6 +398,39 @@ describe('the Linear tools of a worker splitting an epic', () => {
     }
   })
 
+  it('lets a Linear worker that does not split, and its subagents, read only the documents its own issue links', async () => {
+    await start()
+    const [get, list] = ['mcp__linear__get_document', 'mcp__linear__list_documents']
+    await subagent('docs-child', `worker-${tickets.docs}`)
+    for (const id of [`worker-${tickets.docs}`, 'docs-child']) {
+      expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...OWN_READS, get])
+      for (const own of [DOC, DOC.toUpperCase(), DOC_2, DOC_SLUG, `other-title-${DOC_2}`, DOC_URL, `https://linear.app/h-cloud/document/${DOC_2}`]) {
+        expect(call(id, get!, { id: own })).toBeUndefined()
+      }
+      for (const other of ['aaaaaaaaaaaa', `${DOC}0`, `0${DOC}`, `some-title-${DOC}-more`, `e82ea5e9-ac38-4270-92be-${DOC}`, 'ROU-592', EPIC, '', ` ${DOC}`, 'Valhalla 3.9: design',
+        `http://linear.app/h-cloud/document/${DOC_SLUG}`, `https://linear.app.example.com/h-cloud/document/${DOC_SLUG}`, `https://example.com/h-cloud/document/${DOC_SLUG}`,
+        `https://example.com/?next=${DOC_URL}`, `https://linear.app/h-cloud/issue/${DOC_SLUG}`, `https://linear.app/h-cloud/document/aaaaaaaaaaaa`,
+        `https://linear.app/h-cloud/document/e82ea5e9-ac38-4270-92be-${DOC}`, `${DOC_URL}/edit`, `${DOC_URL}?x=1`, `${DOC_URL}#part`]) {
+        expect(call(id, get!, { id: other })).toBe(DOCS_ONLY)
+      }
+      for (const args of [{ id: 42 }, { id: [DOC] }, { slug: DOC }, { documentId: DOC }, {}, undefined]) expect(call(id, get!, args)).toBe(DOCS_ONLY)
+      expect(call(id, list!, { query: 'design' })).toBe(denied(list!))
+      expect(call(id, 'mcp__linear__get_issue', { id: 'ROU-592' })).toBeUndefined()
+      expect(call(id, 'mcp__linear__get_issue', { id: DOC })).toBe(OWN_ONLY)
+      expect(call(id, 'mcp__linear__list_comments', { issueId: 'ROU-592', documentId: DOC })).toBe(OWN_ONLY)
+    }
+  })
+
+  it('gives get_document to no worker whose Trigger carries no valid linked document, as before', async () => {
+    await start()
+    await subagent('plain-child', `worker-${tickets.plain}`)
+    for (const id of [`worker-${tickets.plain}`, 'plain-child', `worker-${tickets.noDocs}`, `worker-${tickets.badDocs}`]) {
+      expect(allowed(id)).toEqual(['read', 'bash', 'mcp__searxng__web_search', 'mcp__context7__query_docs', ...OWN_READS])
+      expect([DOC, 'ROU-592', `x-${DOC}`].map(value => call(id, 'mcp__linear__get_document', { id: value }))).toEqual([1, 2, 3].map(() => denied('mcp__linear__get_document')))
+    }
+    expect(call(`worker-${tickets.endedDocs}`, 'mcp__linear__get_document', { id: DOC })).toBe('Ticket ended; new work needs a new authorized ticket')
+  })
+
   it('gives no Linear reads to a Linear worker whose Trigger names no issue', async () => {
     await start()
     const worker = `worker-${tickets.bare}`
@@ -415,7 +459,8 @@ describe('the Linear tools of a worker splitting an epic', () => {
   describe('in DSH\'s tool registry', () => {
     // As dsh-yawn names them: its server `linear` mounts LiteLLM's `linear_app` endpoint, which prefixes each tool with its name.
     const SERVED = (server: string, names: string[]) => names.map(name => `mcp__${server}__${server === 'linear' ? 'linear_app' : server}-${name}`)
-    const LITELLM = SERVED('linear', ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment'])
+    const LITELLM = SERVED('linear', ['get_issue', 'list_issues', 'list_comments', 'list_issue_labels', 'list_issue_statuses', 'save_issue', 'save_comment',
+      'get_document', 'list_documents'])
     const SEARCH = SERVED('searxng', ['searxng_web_search'])
     const registry = () => h!.ctx.tools as unknown as ToolRuntime
     const agentOf = (id: string) => h!.agents.get(id) as never
@@ -490,6 +535,29 @@ describe('the Linear tools of a worker splitting an epic', () => {
       const plainTools = [LITELLM[0], LITELLM[2], upload].join(', ')
       expect(logs).toContain(`info: dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${plainTools}`)
       expect(stderr).toContain(`dsh-superagent built the tools of worker-${tickets.plain} for Linear ticket ${tickets.plain}; Linear tools: ${plainTools}\n`)
+    })
+
+    it('admits get_document for linked documents to a Linear worker that does not split and its subagent, and to no other Session', async () => {
+      await startReal()
+      const [get, list] = [LITELLM[7]!, LITELLM[8]!]
+      const docs = `worker-${tickets.docs}`
+      await subagent('docs-child', docs)
+      connect(LITELLM)
+      for (const id of [docs, 'docs-child']) {
+        expect(mcpOf(id)).toEqual([LITELLM[0], LITELLM[2], get])
+        expect([DOC, DOC_SLUG, DOC_URL, DOC_2].map(value => reason(id, get, { id: value }))).toEqual([undefined, undefined, undefined, undefined])
+        expect([reason(id, get, { id: 'aaaaaaaaaaaa' }), reason(id, get, {})]).toEqual([DOCS_ONLY, DOCS_ONLY])
+        expect(reason(id, list)).toBe(denied(list))
+      }
+      for (const id of [`worker-${tickets.split}`, `worker-${tickets.plain}`, `worker-${tickets.github}`, `worker-${tickets.bare}`, `worker-${tickets.noDocs}`,
+        `worker-${tickets.badDocs}`, h!.runtime.masterId]) {
+        expect(mcpOf(id)).not.toContain(get)
+        expect([get, list].map(name => reason(id, name, { id: DOC }))).toEqual([denied(get), denied(list)])
+      }
+      expect(reason(`worker-${tickets.endedDocs}`, get, { id: DOC })).toBe('Ticket ended; new work needs a new authorized ticket')
+      const tools = [LITELLM[0], LITELLM[2], get].join(', ')
+      expect(logs).toContain(`info: dsh-superagent built the tools of ${docs} for Linear ticket ${tickets.docs}; Linear tools: ${tools}`)
+      expect(stderr).toContain(`dsh-superagent built the tools of ${docs} for Linear ticket ${tickets.docs}; Linear tools: ${tools}\n`)
     })
 
     it('admits Linear tools by their bare and linear_app- names only, refusing another server\'s prefix', async () => {
