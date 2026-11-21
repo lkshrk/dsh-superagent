@@ -155,6 +155,27 @@ it('wakes an idle worker for a person\'s message at once, in the slot kept beyon
   expect(h.agents.get(one.sessionId)!.status).toBe('running')
 })
 
+it('holds a launch at its repository Workspace\'s limit while another repository\'s ticket starts, and starts it once that Workspace\'s worker ends its turn', async () => {
+  await h.stop()
+  h = await startRuntime(undefined, { repositories: ['other/tools'] })
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, maxWorkersPerWorkspace: 1 } })
+  const accept = async (id: string, fields: Record<string, unknown> = {}) => {
+    const trigger = feishu(id, '@bot 修一下')
+    h.runtime.receive(trigger); await h.runtime.idle()
+    await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${id}`, acknowledgement: '收到。', ...fields })
+    await h.runtime.idle()
+    return h.runtime.store.tickets.list().find(ticket => ticket.origin.triggerId === trigger.id)!
+  }
+  const state = (ticket: Ticket) => latestAssignment(h.runtime.store.tickets.get(ticket.id)!)!.state
+  const one = await accept('1'), two = await accept('2'), tools = await accept('3', { repository: 'Other/Tools' })
+  expect([state(one), state(two), state(tools)]).toEqual(['running', 'pending', 'running'])
+  h.agents.get(`worker-${one.id}`)!.status = 'idle'
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 6000 })
+  try { await h.runtime.pump(); await h.runtime.idle() } finally { vi.useRealTimers() }
+  expect(state(two)).toBe('running')
+})
+
 it('counts a launch under way against maxWorkers, so a bot\'s Input for an idle worker waits for the slot', async () => {
   const settings = h.runtime.store.settings()
   h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, maxWorkers: 1, prepare: 'make worktree' } })
@@ -913,6 +934,21 @@ describe('the Executor\'s parts', () => {
     expect(() => slots.reserve('t7', 'launch')).toThrow(Later)
     slots.reserve('t6', 'person')
     expect(slots.used()).toBe(4)
+  })
+  it('holds launches of a Workspace at its own limit while other Workspaces still start, with one slot beyond it for a person', () => {
+    const running = ['a1']
+    const workspaces: Record<string, string> = { a1: 'a', a2: 'a', a3: 'a', a4: 'a', b1: 'b' }
+    let perWorkspace: number | null = 2
+    const slots = new WorkerSlots(() => running, () => 8, { max: () => perWorkspace, of: id => workspaces[id]! })
+    slots.reserve('a2', 'launch')
+    expect(() => slots.reserve('a3', 'launch')).toThrow(Later)
+    expect(() => slots.reserve('a3', 'wake')).toThrow(Later)
+    slots.reserve('b1', 'launch')
+    slots.reserve('a3', 'person')
+    expect(() => slots.reserve('a4', 'person')).toThrow(Later)
+    perWorkspace = null
+    slots.reserve('a4', 'launch')
+    expect(slots.used()).toBe(5)
   })
   it('words an assignment, and the limits an inferred mandate sets, from the ticket alone', () => {
     const settings = SettingsSchema.parse({ policy: { rules: [{ id: 'copy', name: 'Copy fixes', enabled: true,

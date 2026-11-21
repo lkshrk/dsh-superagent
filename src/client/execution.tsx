@@ -77,10 +77,12 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '),
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers),
+    maxWorkersPerWorkspace: executor.maxWorkersPerWorkspace == null ? '' : String(executor.maxWorkersPerWorkspace), blockedCommands: executor.blockedCommands.join(' '),
     modelRules: executor.modelRules as { label: string; model: typeof executor.model }[] }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers),
+      maxWorkersPerWorkspace: numberOf(value.maxWorkersPerWorkspace), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const editRule = (index: number, next: Partial<typeof value.modelRules[number]>) =>
@@ -113,6 +115,10 @@ export function ExecutionSettings() {
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
+          </Field>
+          <Field label={t('maxWorkersPerWorkspace')} hint={t('maxWorkersPerWorkspaceHint')}>
+            <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} value={value.maxWorkersPerWorkspace}
+              placeholder={t('maxWorkersPerWorkspaceEmpty')} onChange={event => edit({ maxWorkersPerWorkspace: event.target.value })} />
           </Field>
         </div>
         <div className="dt-form dt-block">
