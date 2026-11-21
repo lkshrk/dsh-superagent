@@ -35,6 +35,8 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
   await type(field<HTMLInputElement>(zh.maxWorkers), '5')
+  await type(field<HTMLInputElement>(zh.maxWorkersPerWorkspace), '2')
+  expect(field<HTMLInputElement>(zh.maxWorkersPerWorkspace).value).toBe('2')
   // An empty root uses the default directory, which the field names instead of looking set.
   expect(field<HTMLInputElement>(zh.executionDirectory).closest('.dt-field')!.querySelector('small')?.textContent).toBe('留空时用 /srv/dsh-superagent/work')
   await type(field<HTMLInputElement>(zh.executionDirectory), '/srv/work')
@@ -57,11 +59,14 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   const [, , , ruleProvider, ruleModel] = all('.dt-model input')
   await type(ruleProvider as HTMLInputElement, 'worker-provider'); await type(ruleModel as HTMLInputElement, 'worker-model')
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+  expect(server.settings.executor).toEqual({ maxWorkers: 5, maxWorkersPerWorkspace: 2, directory: '/srv/work',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' }, modelRules: [{ label: 'hard', model: { provider: 'worker-provider', model: 'worker-model' } }] })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])
+  await type(field<HTMLInputElement>(zh.maxWorkersPerWorkspace), '')
+  await click(zh.save)
+  expect(server.settings.executor.maxWorkersPerWorkspace).toBeNull()
 })
 
 it('loads configuration history on demand with localized changes, Source field labels and notified Tickets', async () => {

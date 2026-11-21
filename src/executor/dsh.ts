@@ -204,6 +204,8 @@ export function inputMessage(input: TicketInput, trigger?: object): string | und
   if (input.kind === 'note') return `Note from the orchestrator, for context only: ${input.text}`
   return input.kind === 'text' ? input.text : undefined
 }
+/** The Workspace a ticket's worker works in: its additional repository, or '' for the primary one. */
+const workspaceKey = (ticket: Ticket | undefined): string => ticket?.execution?.repository?.toLowerCase() ?? ''
 /**
  * Tracks active and starting worker sessions against the configured concurrency limit: a ticket holds a slot while its
  * worker's turn runs, while its shell jobs or subagents run after that turn ended, and while a launch or wake starts that worker.
@@ -216,8 +218,10 @@ export class WorkerSlots {
   /**
    * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
+   * @param workspace - The configured maximum of slots per Workspace (null for none), and the Workspace a ticket works in.
    */
-  constructor(private readonly running: () => string[], private readonly max: () => number) {}
+  constructor(private readonly running: () => string[], private readonly max: () => number,
+    private readonly workspace?: { max: () => number | null; of: (ticketId: string) => string }) {}
   /** Number of slots currently in use across running workers and starting reservations. */
   used(): number { return new Set([...this.running(), ...this.starting.keys()]).size }
   /** How many launches may run concurrently: the slots not held by a running worker or a wake reservation. */
@@ -227,13 +231,20 @@ export class WorkerSlots {
   }
   /**
    * Reserves a startup slot for `ticketId`; idempotent if `ticketId` already holds a starting slot.
-   * A wake for a person's message (`by === 'person'`) may use one extra slot beyond `max()`.
+   * A wake for a person's message (`by === 'person'`) may use one extra slot beyond `max()` and beyond its Workspace's maximum.
    * Call `free(ticketId)` once the worker turn is running or the launch/wake attempt ends.
    * @throws Later when no slot is free.
    */
   reserve(ticketId: string, by: 'launch' | 'wake' | 'person'): void {
     if (this.starting.has(ticketId)) return
-    if (this.used() >= this.max() + (by === 'person' ? 1 : 0)) throw new Later('No worker slot is free')
+    const extra = by === 'person' ? 1 : 0
+    if (this.used() >= this.max() + extra) throw new Later('No worker slot is free')
+    const perWorkspace = this.workspace?.max()
+    if (this.workspace && perWorkspace != null) {
+      const { of } = this.workspace, own = of(ticketId)
+      const held = new Set([...this.running(), ...this.starting.keys()].filter(id => of(id) === own)).size
+      if (held >= perWorkspace + extra) throw new Later('No worker slot of this Workspace is free')
+    }
     this.starting.set(ticketId, by)
   }
   /** Releases `ticketId`'s starting slot once its worker session is running or the launch/wake attempt has ended. */
@@ -271,7 +282,8 @@ export class DshExecutor implements Executor {
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
-      () => host.store.settings().executor.maxWorkers)
+      () => host.store.settings().executor.maxWorkers,
+      { max: () => host.store.settings().executor.maxWorkersPerWorkspace, of: ticketId => workspaceKey(host.store.tickets.get(ticketId)) })
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })

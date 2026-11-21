@@ -91,11 +91,12 @@ const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => n
 /** A worker model chosen by a label on the ticket's origin trigger. */
 export const ModelRuleSchema = z.object({ label: z.string().trim().min(1).max(100), model: RoleModelSchema }).strict()
 export type ModelRule = z.infer<typeof ModelRuleSchema>
-/** Executor settings: worker model and its label rules, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/** Executor settings: worker model and its label rules, concurrency overall and per repository Workspace (null for no own limit), ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   modelRules: z.array(ModelRuleSchema).default([]),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
+  maxWorkersPerWorkspace: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).nullable().default(null),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),

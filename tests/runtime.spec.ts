@@ -743,6 +743,15 @@ it('records each settings save with its policy change and the open tickets told 
   ])
 })
 
+it('records setting and clearing the per-Workspace worker limit, with a dash for no limit', async () => {
+  const save = (maxWorkersPerWorkspace: number | null) => runtime.settings.save('executor',
+    { ...runtime.store.settings().executor, maxWorkersPerWorkspace }, runtime.store.blockRevision('executor'), 'panel')
+  await save(2); await save(null)
+  const history = policyHistory(runtime.store, runtime.sources, policyVersion(runtime.store.settings()))
+  expect(history.items.slice(0, 2).map(item => item.changes)).toEqual([
+    [{ code: 'maxWorkersPerWorkspace', from: 2, to: '—' }], [{ code: 'maxWorkersPerWorkspace', from: '—', to: 2 }]])
+})
+
 it('refuses an accept through orchestrator_route for inferred candidates so proactive work always goes through Eval', async () => {
   const observed = feishu('21', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
   await receive(observed)
