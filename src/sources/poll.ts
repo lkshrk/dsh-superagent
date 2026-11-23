@@ -14,7 +14,10 @@ export function polled(ctx: SourceContext, thread: Thread, now = Date.now()): bo
 }
 /** Steps a poll start timestamp back by 5 seconds so late-arriving remote events are not missed; deterministic trigger IDs deduplicate overlaps. */
 export const cursorAt = (started: string): string => new Date(Date.parse(started) - 5000).toISOString()
-/** Polls each subscribed Thread of `source` within the horizon independently; records failures on the Thread as `pollError` (unless `stopped()`) and clears `pollError` on success. */
+/** True once every poll of `thread` has failed for `ms`, counted from the first failure `pollThreads` recorded on it. */
+export const failingFor = (thread: Thread, ms: number, now = Date.now()): boolean =>
+  typeof thread.meta.pollFailedAt === 'string' && now - Date.parse(thread.meta.pollFailedAt) >= ms
+/** Polls each subscribed Thread of `source` within the horizon independently; records a failure on the Thread as `pollError`, and the first of a run as `pollFailedAt` (unless `stopped()`), and clears both on success. */
 export async function pollThreads(ctx: SourceContext, source: string, stopped: () => boolean, poll: (thread: Thread) => Promise<void>,
   skip: (thread: Thread) => boolean = () => false): Promise<void> {
   for (const thread of ctx.threads.subscribed(source)) {
@@ -22,10 +25,11 @@ export async function pollThreads(ctx: SourceContext, source: string, stopped: (
     if (skip(thread) || !polled(ctx, thread)) continue
     try {
       await poll(thread)
-      ctx.threads.patch(thread.key, { pollError: undefined })
+      ctx.threads.patch(thread.key, { pollError: undefined, pollFailedAt: undefined })
     } catch (error) {
       if (stopped()) return
-      ctx.threads.patch(thread.key, { pollError: String(error) })
+      const since = typeof thread.meta.pollFailedAt === 'string' ? thread.meta.pollFailedAt : new Date().toISOString()
+      ctx.threads.patch(thread.key, { pollError: String(error), pollFailedAt: since })
     }
   }
 }
