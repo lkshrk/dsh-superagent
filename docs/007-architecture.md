@@ -535,7 +535,7 @@ Each Executor has six application tools:
 | `orchestrator_ack` | Acknowledge a request |
 | `orchestrator_report` | Report progress or an outcome, binding a pull request under the pull-request rules |
 | `orchestrator_thread_unrelated` | Drop an unrelated attached Thread, hand back its owned follow-ups and tell the main Session why |
-| `orchestrator_thread_follow` | Subscribe to a related Thread for context and tell the main Session |
+| `orchestrator_thread_follow` | Subscribe to a related Thread for context and tell the main Session; a GitHub number without a repository is the Ticket's repository's |
 | `orchestrator_trigger_handback` | Hand back a message once, with a reason carried by its candidate |
 
 A hand-back returns `queued: false` if another Ticket still owns the message, or this Ticket never owned it. For example, a bot message went to Eval independently.
