@@ -14,7 +14,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { STATE_LOCK_STALE_MS } from './state-lock.ts'
-import { Engine, key, reasonText, type EngineForSettings, type Execution, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, reasonText, threadKey, type EngineForSettings, type Execution, type ReceiveResult, type Thread, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
@@ -38,7 +38,8 @@ import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { eventNotice, followupNotice } from './notices.ts'
 import { resultText } from './report-images.ts'
-import { pullEndNotices } from '../sources/github-pull.ts'
+import { pullEndNotices, pullRepository, ticketRepository } from '../sources/github-pull.ts'
+import { localId, SOURCE as GITHUB } from '../sources/github-trigger.ts'
 import { HealthBoard } from '../infra/health.ts'
 import { Outbox } from './outbox.ts'
 import { Passes } from './passes.ts'
@@ -217,6 +218,7 @@ export class Runtime extends Service implements SourceHost {
       return
     }
     this.settleExecutions()
+    this.settleThreads()
     this.sessions.install()
     this.executor.install()
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
@@ -245,6 +247,35 @@ export class Runtime extends Service implements SourceHost {
         const { shared, repository: kept, ...rest } = execution
         this.store.tickets.save({ ...ticket, execution: { ...rest, ...kept && !named ? { repository: kept } : {},
           ...shared ? { workspace: execution.directory, directory: join(root, execution.name) } : {} } })
+      }
+    })
+  }
+  /** Moves the Subscriptions of a GitHub Thread that only workers of one additional repository followed by a bare number, which the primary answers 404 for, to that repository's Thread. */
+  private settleThreads(): void {
+    const { deployment } = this.setup
+    const meant = (thread: Thread): string | undefined => {
+      if (thread.ref.source !== GITHUB || !/^[1-9]\d*$/.test(thread.ref.id) || !thread.subscriptions.length) return undefined
+      if (thread.lastAt || thread.pending.length || thread.evaluating || typeof thread.meta.isPr === 'boolean') return undefined
+      if (!/\(HTTP 404\)/.test(String(thread.meta.pollError ?? '')) || !thread.subscriptions.every(id => thread.context?.includes(id))) return undefined
+      const named = thread.subscriptions.map(id => {
+        const ticket = this.store.tickets.get(id)
+        const name = ticket && ticketRepository(ticket, this.store.triggers.get(ticket.origin.triggerId))
+        return deployment.repositories.find(repository => sameName(repository, name ?? '')) ?? ''
+      })
+      const [first] = named
+      return first && named.every(name => name === first) ? pullRepository(deployment, first) : undefined
+    }
+    this.store.atomic(() => {
+      for (const thread of this.store.threads.list()) {
+        const repository = meant(thread)
+        if (!repository) continue
+        const ref = { source: GITHUB, id: localId(thread.ref.id, repository) }
+        const target = this.store.threads.get(threadKey(ref))
+          ?? { key: threadKey(ref), ref, createdAt: thread.createdAt, subscriptions: [], correlated: [], pending: [], meta: {} }
+        const moved = thread.subscriptions.filter(id => !target.subscriptions.includes(id))
+        this.store.threads.save({ ...target, subscriptions: [...target.subscriptions, ...moved],
+          ...moved.length ? { context: [...target.context ?? [], ...moved] } : {} })
+        this.store.threads.delete(thread.key)
       }
     })
   }

@@ -728,6 +728,34 @@ describe('github source', () => {
       detail: '0 notifications; next poll ≥ 60s; dropped after their reads kept failing: #16' })
     h.store.close()
   })
+  it('stops failing the round for a subscribed Thread whose reads fail for a day, names it in the health and keeps its error', async () => {
+    const h = host()
+    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.tickets.save(openTicket('t333'))
+    h.store.threads.save({ key: 'github:333', ref: { source: 'github', id: '333' }, createdAt: '2026-09-01T00:00:00Z', lastAt: new Date().toISOString(),
+      subscriptions: ['t333'], context: ['t333'], correlated: [], pending: [], meta: {} })
+    const routes: Record<string, unknown> = { notifications: [] }
+    github(h, routes)
+    await expect(pollRound(h)).rejects.toThrow('1 GitHub reads failed: github:333: Error: gh: Not Found (HTTP 404)')
+    const meta = () => h.store.threads.get('github:333')!.meta
+    const first = meta().pollFailedAt as string
+    expect(Date.parse(first)).toBeGreaterThan(Date.now() - 60_000)
+    // The first failed read dates the failure, however many follow it.
+    await expect(pollRound(h)).rejects.toThrow('github:333')
+    expect(meta().pollFailedAt).toBe(first)
+    h.threads.patch('github:333', { pollFailedAt: new Date(Date.now() - 25 * 3600_000).toISOString() })
+    await pollRound(h)
+    expect(meta().pollError).toContain('Not Found')
+    expect(h.entries.github).toMatchObject({ state: 'ready',
+      detail: '0 notifications; next poll ≥ 60s; subscribed Threads unread for a day: #333' })
+    // A read that succeeds ends the failure, so a later one is given a day again.
+    routes['issues/333'] = issue(333, { created_at: '2026-08-01T00:00:00Z' })
+    await pollRound(h)
+    expect(meta()).not.toHaveProperty('pollError')
+    expect(meta()).not.toHaveProperty('pollFailedAt')
+    expect(h.entries.github).toMatchObject({ state: 'ready', detail: '0 notifications; next poll ≥ 60s' })
+    h.store.close()
+  })
   it('polls the PRs of open tickets and subscribed Threads although the notifications fail, and then fails the round', async () => {
     const h = host()
     h.store.set('github-since', '2026-09-08T00:00:00.000Z')

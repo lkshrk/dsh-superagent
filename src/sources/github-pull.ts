@@ -38,6 +38,12 @@ export function pullRepository(deployment: Pick<Deployment, 'repository' | 'repo
   if (!known) throw new Error(`${name} is not a repository of the GitHub Source`)
   return known
 }
+/** The Thread ID a ticket working in `repository` names by `id`: a bare number is that repository's, and `owner/name#12` names a repository of the Source; throws for any other ID or repository. */
+export function ticketThread(deployment: Pick<Deployment, 'repository' | 'repositories'>, id: string, repository?: string): string {
+  const { repository: named, local } = parseLocal(id)
+  if (!/^(?:[1-9]\d*|ci:.+)$/.test(local)) throw new Error('A GitHub thread is github:<number>, or github:<owner>/<name>#<number> in another repository than the ticket\'s')
+  return localId(local, pullRepository(deployment, named ?? repository))
+}
 const pullThread = (pr: Pick<Pull, 'number' | 'repository'>): string => localId(pr.number, pr.repository)
 /** True when the PR was opened by the agent account from a branch in the PR's own repository (not a fork). */
 export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_name: string } | null } | null; repository?: string },

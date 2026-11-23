@@ -169,6 +169,8 @@ A notified Issue or pull request whose reads keep failing is dropped a day after
 
 Its read position stays where it was, so a later notification or a poll of its Thread reads what the failed reads missed.
 
+A subscribed Thread whose polls keep failing no longer fails the poll a day after its first failed poll, either. It is still polled while its Subscriptions keep it within the polling window, its Thread keeps the error, and the Source's state names it; a poll that succeeds ends this, and unsubscribing the Thread in the panel stops the polls.
+
 The Feishu event consumer reports every failure, and polling of subscribed topics keeps each failure on its Thread.
 
 A malformed item in a GitHub list or a Feishu page is skipped, and the Source's state counts it.

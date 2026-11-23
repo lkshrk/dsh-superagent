@@ -13,7 +13,7 @@ import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
 import { KV, type Family } from '../kv.ts'
-import { cursorAt, pause, polled, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
+import { cursorAt, failingFor, pause, polled, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { z } from 'zod'
 
@@ -167,13 +167,13 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 /** Issues, PRs and failures are keyed by their Thread ID within the Source (`12`, or `owner/name#12` in an additional repository). */
 interface Round {
   started: string; signal?: AbortSignal | undefined
-  pulls: Map<string, Promise<Pull>>; read: Set<string>; failures: string[]; dropped: string[]; abandoned: string[]
+  pulls: Map<string, Promise<Pull>>; read: Set<string>; failures: string[]; dropped: string[]; abandoned: string[]; unread: string[]
   /** Additional repositories that are still unverified, with the reason; nothing in them is polled this round. */
   unreadable: Map<string, string>
   tally: Tally
 }
 const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
-  failures: [], dropped: [], abandoned: [], unreadable: new Map(), tally: { skipped: 0 } })
+  failures: [], dropped: [], abandoned: [], unread: [], unreadable: new Map(), tally: { skipped: 0 } })
 /** An Issue or PR in the primary repository, or in the additional one `repository` names. */
 interface Target { number: number; repository?: string | undefined }
 const idOf = (target: Target): string => localId(target.number, target.repository)
@@ -335,7 +335,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round, repository?: strin
  * One polling round: each repository's notifications unless switched off, then each repository's observed streams, then the PRs of open tickets with their CI, then
  * subscribed Threads. Each step and each Issue, PR, or Thread fails independently so all steps run before the round fails.
  * Other read failures (including 404) fail the round toward the error threshold, whereas deleted (410) or abandoned
- * (24h+) threads are recorded only on the thread and in health detail.
+ * (24h+) threads, and subscribed Threads whose polls have failed for 24 hours, are recorded only on the thread and in health detail.
  * @returns the polling interval requested by GitHub, in seconds.
  */
 export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
@@ -377,6 +377,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (unreadable.length) return interval
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
+    + (round.unread.length ? `; subscribed Threads unread for a day: ${named(round.unread)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
   ctx.report('github', { state: 'ready', detail: `${reading ? `${count} notifications` : 'notifications off'}; next poll ≥ ${interval}s${dropped}`, at: round.started })
   return interval
@@ -485,7 +486,7 @@ async function readNotified(ctx: SourceContext, round: Round, target: Target, it
     if (pr.title) nameThread(ctx, target, pr.title)
   }
   ctx.state.set(KV.github.cursor(idOf(target)), cursorAt(round.started))
-  ctx.threads.patch(`github:${idOf(target)}`, { pollError: undefined })
+  ctx.threads.patch(`github:${idOf(target)}`, { pollError: undefined, pollFailedAt: undefined })
 }
 /** Reads and observes a PR at most once per polling round. */
 function pull(ctx: SourceContext, round: Round, target: Target): Promise<Pull> {
@@ -579,13 +580,15 @@ export async function pollIssueCloses(ctx: SourceContext, signal?: AbortSignal, 
   ctx.state.set(KV.github.issueChecks, Object.keys(next).length ? next : undefined)
 }
 const IssueStateSchema = z.looseObject({ state: z.string(), closed_at: z.string().nullish() })
-/** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue is still polled within the horizon (costing one read) and does not fail the round. */
+/** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue, or a Thread whose polls have failed for `RETRY_WINDOW_MS`, is still polled within the horizon (costing one read) and does not fail the round. */
 export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
   await pollEach(ctx, SOURCE, () => stopped(ctx, round), async thread => {
     try { await pollThread(ctx, round, thread) }
     catch (error) {
       if (stopped(ctx, round)) throw error
-      if (deleted(error)) round.dropped.push(thread.ref.id); else round.failures.push(`${thread.key}: ${String(error)}`)
+      if (deleted(error)) round.dropped.push(thread.ref.id)
+      else if (failingFor(thread, RETRY_WINDOW_MS, Date.parse(round.started))) round.unread.push(thread.ref.id)
+      else round.failures.push(`${thread.key}: ${String(error)}`)
       throw error
     }
   }, thread => round.read.has(thread.ref.id) || !usable(round, parseLocal(thread.ref.id).repository))

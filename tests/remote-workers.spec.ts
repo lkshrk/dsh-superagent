@@ -174,6 +174,34 @@ describe('repository Workspaces', () => {
       { name: 't2', assignment: '', directory: join(work, 't2'), workspace: '/anchors/tools', repository: 'other/tools' },
       { name: 't3', assignment: '', directory: '/w/t3' }])
   })
+  it('moves a Thread that tickets of one other repository followed by a bare number the primary lacks to that repository, and leaves any other alone', async () => {
+    const ticket = (id: string, repository?: string) => ({ id, title: id, decisionId: `d-${id}`, channels: [], assignments: [], inputs: [], undelivered: [],
+      mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
+      createdAt: '', updatedAt: '', origin: { triggerId: `source-${id}`, triggerIds: [] },
+      execution: { name: id, assignment: '', directory: `/w/${id}`, ...repository ? { repository } : {} } }) as unknown as Ticket
+    const missing = { pollError: 'Error: gh: Not Found (HTTP 404)', pollFailedAt: '2026-09-09T00:00:00.000Z' }
+    const thread = (id: string, subscriptions: string[], fields: Record<string, unknown> = {}) => ({ key: `github:${id}`, ref: { source: 'github', id },
+      createdAt: '2026-09-08T00:00:00.000Z', subscriptions, context: subscriptions, correlated: [], pending: [], meta: missing, ...fields })
+    h = await startRuntime(store => {
+      for (const [id, repository] of [['t1', 'other/tools'], ['t2', 'Other/Tools'], ['t3', undefined]] as const) store.tickets.save(ticket(id, repository))
+      store.threads.save(thread('333', ['t1', 't2']))
+      store.threads.save(thread('other/tools#334', ['t2'], { context: undefined, meta: { number: 334, isPr: true, title: 'Fix' } }))
+      store.threads.save(thread('334', ['t1', 't2']))
+      store.threads.save(thread('40', ['t3']))
+      store.threads.save(thread('41', ['t1', 't3']))
+      store.threads.save(thread('42', ['t1'], { context: undefined }))
+      store.threads.save(thread('43', ['t1'], { meta: { ...missing, pollError: 'Error: gh: Bad Gateway (HTTP 502)' } }))
+      store.threads.save(thread('44', ['t1'], { meta: { ...missing, number: 44, isPr: false, title: 'Gone' } }))
+      store.threads.save(thread('45', ['t1'], { lastAt: '2026-09-08T01:00:00.000Z' }))
+    }, { repositories: ['other/tools'] })
+    const { threads } = h.runtime.store
+    expect(threads.list().filter(item => item.ref.source === 'github').map(item => item.key).sort())
+      .toEqual(['github:40', 'github:41', 'github:42', 'github:43', 'github:44', 'github:45', 'github:other/tools#333', 'github:other/tools#334'])
+    expect(threads.get('github:other/tools#333')).toEqual({ key: 'github:other/tools#333', ref: { source: 'github', id: 'other/tools#333' },
+      createdAt: '2026-09-08T00:00:00.000Z', subscriptions: ['t1', 't2'], context: ['t1', 't2'], correlated: [], pending: [], meta: {} })
+    // A ticket the repository's Thread already reaches keeps the Subscription it has there.
+    expect(threads.get('github:other/tools#334')).toMatchObject({ subscriptions: ['t2', 't1'], context: ['t1'], meta: { number: 334, isPr: true, title: 'Fix' } })
+  })
   it('works where a GitHub Trigger came from, and fails a launch of a ticket whose repository was taken off the list', async () => {
     h = await startRuntime(undefined, { machine: { remoteWorkers: true }, without: ['permissionPresets'], repositories: ['other/tools'] })
     const comment = (id: number, repository?: string) => commentTrigger({ id, body: '@agent-bot fix the margin', user: { login: 'alice', type: 'User' },

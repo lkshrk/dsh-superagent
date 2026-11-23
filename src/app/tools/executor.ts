@@ -2,7 +2,8 @@
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
-import { claimPull, pullRepository, readPull, ticketRepository } from '../../sources/github-pull.ts'
+import { claimPull, pullRepository, readPull, ticketRepository, ticketThread } from '../../sources/github-pull.ts'
+import { SOURCE } from '../../sources/github-trigger.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
@@ -51,15 +52,20 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       name: 'orchestrator_thread_follow',
       description: 'Follow a related thread, such as an Issue or another PR, for context only.',
       schema: z.object({
-        thread: z.string().describe('Thread key, such as github:<number>.'),
+        thread: z.string().describe('Thread key, such as github:<number> for an Issue or PR of the ticket\'s repository (DSH_SUPERAGENT_GITHUB_REPOSITORY), or github:<owner>/<name>#<number> for one of another repository; the result names the key it follows.'),
         reason: z.string().trim().min(1).max(300).describe('How it relates, in one sentence.'),
       }).strict(),
       execute: async args => host.store.atomic(() => {
         const at = args.thread.indexOf(':')
         if (at < 1 || at === args.thread.length - 1) throw new Error('A thread key is <source>:<id>, such as github:<number>')
-        const followed = host.engine.followForContext(ticketId, { source: args.thread.slice(0, at), id: args.thread.slice(at + 1) })
-        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, args.thread, args.reason))
-        return { followed, thread: args.thread }
+        const source = args.thread.slice(0, at), named = args.thread.slice(at + 1)
+        const current = host.store.tickets.get(ticketId)
+        const id = source === SOURCE && current
+          ? ticketThread(host.github.deployment, named, ticketRepository(current, host.github.triggers.get(current.origin.triggerId))) : named
+        const thread = `${source}:${id}`
+        const followed = host.engine.followForContext(ticketId, { source, id })
+        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, thread, args.reason))
+        return { followed, thread }
       }),
     }),
     tool({

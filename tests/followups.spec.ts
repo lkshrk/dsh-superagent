@@ -176,6 +176,27 @@ it('lets a worker follow a related thread for context, which the main Session he
     .toEqual([expect.stringContaining('Note from the orchestrator, for context only: Ticket B renamed the setting.')])
 })
 
+it('follows a GitHub thread a worker names by its number in the repository its ticket works in, never in the primary', async () => {
+  h = await startRuntime(undefined, { repositories: ['other/tools'] })
+  const trigger = feishu('1', '@bot 修一下回归')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-tools', acknowledgement: '收到。', repository: 'other/tools' })
+  await h.runtime.idle()
+  const ticket = h.runtime.store.tickets.list().find(item => item.origin.triggerId === trigger.id)!
+  expect(ticket.execution!.repository).toBe('other/tools')
+  const follow = (thread: string) => h!.runTool(`worker-${ticket.id}`, 'orchestrator_thread_follow', { thread, reason: 'Its pull request.' })
+  expect(await follow('github:333')).toEqual({ followed: true, thread: 'github:other/tools#333' })
+  expect(h.runtime.store.threads.get('github:333')).toBeUndefined()
+  expect(h.runtime.store.threads.get('github:other/tools#333')).toMatchObject({ subscriptions: [ticket.id], context: [ticket.id] })
+  expect(await follow('github:Other/Tools#333')).toEqual({ followed: false, thread: 'github:other/tools#333' })
+  // The primary is named in full from a ticket of another repository, and keeps its unqualified key.
+  expect(await follow('github:ACME/widgets#7')).toEqual({ followed: true, thread: 'github:7' })
+  await expect(follow('github:someone/else#1')).rejects.toThrow('someone/else is not a repository of the GitHub Source')
+  await expect(follow('github:pull/333')).rejects.toThrow('github:<number>')
+  expect(h.runtime.store.threads.list().filter(thread => thread.ref.source === 'github').map(thread => thread.key))
+    .toEqual(['github:other/tools#333', 'github:7'])
+})
+
 it('takes the message a follow-up answers from its Source kind, whichever kind it is', async () => {
   h = await startRuntime()
   const parent = feishu('1', 'the earlier message')
